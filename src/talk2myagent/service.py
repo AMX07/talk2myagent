@@ -19,10 +19,25 @@ class Request(BaseModel):
 
 
 def create_app(engine: Engine) -> FastAPI:
-    operations = {name: validate_call(getattr(engine, name)) for name in (
-        "doctor", "prepare", "dial_request", "connect", "recording_start", "recording_stop",
-        "say", "listen", "keypad", "tones", "interrupt", "simulate_remote", "finish", "result",
-    )}
+    operations = {
+        name: validate_call(getattr(engine, name))
+        for name in (
+            "doctor",
+            "prepare",
+            "dial_request",
+            "connect",
+            "recording_start",
+            "recording_stop",
+            "say",
+            "listen",
+            "keypad",
+            "tones",
+            "interrupt",
+            "simulate_remote",
+            "finish",
+            "result",
+        )
+    }
 
     @asynccontextmanager
     async def lifespan(app):

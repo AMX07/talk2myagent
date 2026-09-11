@@ -1,0 +1,41 @@
+{
+  "plan": {
+    "company": "Amazon US",
+    "phone_number": "+12025550123",
+    "phone_source": "Reserved fictional demonstration number; never dial.",
+    "objective": "Return coffee grinder; obtain the confirmation and next steps.",
+    "customer_name": "Alex Demo",
+    "facts": {
+      "order_id": "DEMO-1234",
+      "item": "coffee grinder",
+      "reason": "It arrived damaged.",
+      "action": "return"
+    },
+    "opening": "Hello, I'm an AI assistant calling on behalf of Alex Demo. May I record and transcribe this conversation to help them follow up?",
+    "dialogue": {
+      "after_recording_consent": "Please help return the coffee grinder, order DEMO-1234. The reason is: It arrived damaged..",
+      "order_id": "The order number is DEMO-1234.",
+      "reason": "It arrived damaged.",
+      "verification": "The account holder can complete verification directly. Please hold.",
+      "if_cancellation_unavailable": "Please explain the return options, fees, deadline, and refund method. Do not initiate a different action yet.",
+      "confirm": "Please confirm the exact item, any fees, refund method, and next steps before proceeding.",
+      "close": "Please give me the case or confirmation number. Thank you for your help."
+    },
+    "allowed_actions": [
+      "Request return of this exact item only",
+      "Ask for confirmation and next steps"
+    ],
+    "stop_conditions": [
+      "Account holder must complete identity verification",
+      "Any fee, purchase, subscription, or different item/action is proposed",
+      "Recording is declined: stop recording; let the user decide how to continue",
+      "The representative requires a human account holder"
+    ],
+    "success_criteria": [
+      "Representative explicitly confirms return status for the specified item",
+      "Record reference number, refund details, and any remaining user actions"
+    ],
+    "is_demo": true
+  },
+  "mode": "demo"
+}

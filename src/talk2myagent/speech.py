@@ -46,11 +46,15 @@ class Speech:
             started = time.monotonic()
             audio = resample(audio, rate, 16000)
             result = mlx_whisper.transcribe(
-                audio, path_or_hf_repo=self.config.stt_model, language="en",
-                condition_on_previous_text=False, temperature=0,
+                audio,
+                path_or_hf_repo=self.config.stt_model,
+                language="en",
+                condition_on_previous_text=False,
+                temperature=0,
             )
             text = " ".join(
-                s["text"].strip() for s in result.get("segments", [])
+                s["text"].strip()
+                for s in result.get("segments", [])
                 if s.get("no_speech_prob", 0) < 0.8
             ).strip()
             return {"text": text, "inference_seconds": round(time.monotonic() - started, 3)}

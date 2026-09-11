@@ -19,16 +19,28 @@ def loopback_test(config: Settings, seconds: float = 1) -> dict:
         incoming, outgoing = device_index(name, "inputs"), device_index(name, "outputs")
         rate = config.sample_rate
         blocks = []
-        t = np.arange(int(rate*seconds))/rate
-        audio = (0.04*np.sin(2*np.pi*440*t)).astype(np.float32)
-        with sd.InputStream(device=incoming, channels=1, samplerate=rate, dtype="float32",
-                            callback=lambda data, frames, timing, status: blocks.append(data[:, 0].copy())):
+        t = np.arange(int(rate * seconds)) / rate
+        audio = (0.04 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        with sd.InputStream(
+            device=incoming,
+            channels=1,
+            samplerate=rate,
+            dtype="float32",
+            callback=lambda data, frames, timing, status, target=blocks: target.append(
+                data[:, 0].copy()
+            ),
+        ):
             threading.Event().wait(0.1)
-            with sd.OutputStream(device=outgoing, channels=1, samplerate=rate, dtype="float32") as stream:
+            with sd.OutputStream(
+                device=outgoing, channels=1, samplerate=rate, dtype="float32"
+            ) as stream:
                 stream.write(audio)
             threading.Event().wait(0.15)
         captured = np.concatenate(blocks) if blocks else np.zeros(1)
         rms = float(np.sqrt(np.mean(captured**2)))
         results.append({"device": name, "captured_rms": rms, "passed": rms > 0.005})
-    return {"passed": all(r["passed"] for r in results), "buses": results,
-            "scope": "Local loopback only. Does not verify Phone routing or remote reception."}
+    return {
+        "passed": all(r["passed"] for r in results),
+        "buses": results,
+        "scope": "Local loopback only. Does not verify Phone routing or remote reception.",
+    }

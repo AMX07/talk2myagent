@@ -1,0 +1,11 @@
+{
+  "input_device": "BlackHole 16ch",
+  "output_device": "BlackHole 2ch",
+  "sample_rate": 48000,
+  "stt_model": "mlx-community/whisper-small.en-mlx",
+  "voice": "af_heart",
+  "silence_seconds": 0.7,
+  "speech_threshold": 0.008,
+  "max_call_seconds": 900,
+  "idle_seconds": 120
+}

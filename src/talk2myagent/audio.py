@@ -16,8 +16,13 @@ from .speech import resample
 
 def devices() -> list[dict]:
     return [
-        {"index": i, "name": d["name"], "inputs": d["max_input_channels"],
-         "outputs": d["max_output_channels"], "sample_rate": d["default_samplerate"]}
+        {
+            "index": i,
+            "name": d["name"],
+            "inputs": d["max_input_channels"],
+            "outputs": d["max_output_channels"],
+            "sample_rate": d["default_samplerate"],
+        }
         for i, d in enumerate(sd.query_devices())
     ]
 
@@ -75,6 +80,7 @@ class AudioBridge:
         self.thread = None
         self.stream = None
         self.playback_stop = threading.Event()
+        self.playing = threading.Event()
 
     def start(self):
         if self.config.input_device == self.config.output_device:
@@ -82,8 +88,11 @@ class AudioBridge:
         incoming = device_index(self.config.input_device, "inputs")
         device_index(self.config.output_device, "outputs")
         self.stream = sd.InputStream(
-            device=incoming, samplerate=self.config.sample_rate, channels=1,
-            dtype="float32", blocksize=int(self.config.sample_rate * 0.02),
+            device=incoming,
+            samplerate=self.config.sample_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=int(self.config.sample_rate * 0.02),
             callback=self._callback,
         )
         self.stream.start()
@@ -94,12 +103,17 @@ class AudioBridge:
         if status:
             self.on_error(f"Audio input: {status}")
         try:
-            self.blocks.put_nowait((indata[:, 0].copy(), time.monotonic() - frames / self.config.sample_rate))
+            self.blocks.put_nowait(
+                (indata[:, 0].copy(), time.monotonic() - frames / self.config.sample_rate)
+            )
         except queue.Full:
             self.on_error("Audio capture overflow; recording/transcript may have a gap.")
 
     def _consume(self):
-        vad = Segmenter(self.config.sample_rate, self.config.speech_threshold, self.config.silence_seconds)
+        vad = Segmenter(
+            self.config.sample_rate, self.config.speech_threshold, self.config.silence_seconds
+        )
+        overlap = 0.0
         try:
             while not self.stop.is_set() or not self.blocks.empty():
                 try:
@@ -110,19 +124,34 @@ class AudioBridge:
                     if self.writer:
                         self.writer.write(block)
                         self.writer.flush()
+                if (
+                    self.playing.is_set()
+                    and float(np.sqrt(np.mean(block * block))) >= self.config.speech_threshold
+                ):
+                    overlap += len(block) / self.config.sample_rate
+                    if overlap >= 0.3:
+                        self.playback_stop.set()
+                else:
+                    overlap = 0.0
                 segment = vad.feed(block)
                 if segment is not None:
-                    self.on_segment(segment, at + len(block)/self.config.sample_rate - len(segment)/self.config.sample_rate)
+                    self.on_segment(
+                        segment,
+                        at
+                        + len(block) / self.config.sample_rate
+                        - len(segment) / self.config.sample_rate,
+                    )
             segment = vad.flush()
             if segment is not None:
-                self.on_segment(segment, time.monotonic() - len(segment)/self.config.sample_rate)
-        except Exception as exc:
+                self.on_segment(segment, time.monotonic() - len(segment) / self.config.sample_rate)
+        except Exception as exc:  # noqa: BLE001 - report hardware/codec failure from this worker
             self.on_error(f"Audio consumer failed: {exc}")
 
     def record(self, path: Path):
         with self.record_lock:
-            self.writer = sf.SoundFile(path, mode="w", samplerate=self.config.sample_rate,
-                                       channels=1, subtype="PCM_16")
+            self.writer = sf.SoundFile(
+                path, mode="w", samplerate=self.config.sample_rate, channels=1, subtype="PCM_16"
+            )
 
     def stop_recording(self):
         with self.record_lock:
@@ -135,16 +164,25 @@ class AudioBridge:
         samples = resample(audio, rate, self.config.sample_rate)
         self.playback_stop.clear()
         written = 0
-        with sd.OutputStream(device=outgoing, samplerate=self.config.sample_rate,
-                             channels=1, dtype="float32", blocksize=960) as stream:
-            for offset in range(0, len(samples), 960):
-                if self.playback_stop.is_set():
-                    break
-                block = samples[offset:offset + 960]
-                underflow = stream.write(block)
-                if underflow:
-                    self.on_error("Audio output underflow; remote party may have heard a gap.")
-                written += len(block)
+        self.playing.set()
+        try:
+            with sd.OutputStream(
+                device=outgoing,
+                samplerate=self.config.sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=960,
+            ) as stream:
+                for offset in range(0, len(samples), 960):
+                    if self.playback_stop.is_set():
+                        break
+                    block = samples[offset : offset + 960]
+                    underflow = stream.write(block)
+                    if underflow:
+                        self.on_error("Audio output underflow; remote party may have heard a gap.")
+                    written += len(block)
+        finally:
+            self.playing.clear()
         return written / self.config.sample_rate
 
     def close(self):
@@ -163,13 +201,15 @@ def dtmf(digits: str, rate: int = 48000) -> np.ndarray:
     keys = ["123A", "456B", "789C", "*0#D"]
     sounds = []
     for digit in digits:
-        positions = [(r, c) for r, row in enumerate(keys) for c, key in enumerate(row) if key == digit]
+        positions = [
+            (r, c) for r, row in enumerate(keys) for c, key in enumerate(row) if key == digit
+        ]
         if not positions:
             raise ValueError("DTMF supports 0-9, *, #, A-D only.")
         r, c = positions[0]
         t = np.arange(int(rate * 0.18)) / rate
-        tone = 0.2 * (np.sin(2*np.pi*rows[r]*t) + np.sin(2*np.pi*cols[c]*t))
-        ramp = min(240, len(tone)//2)
+        tone = 0.2 * (np.sin(2 * np.pi * rows[r] * t) + np.sin(2 * np.pi * cols[c] * t))
+        ramp = min(240, len(tone) // 2)
         tone[:ramp] *= np.linspace(0, 1, ramp)
         tone[-ramp:] *= np.linspace(1, 0, ramp)
         sounds.extend([tone, np.zeros(int(rate * 0.12))])

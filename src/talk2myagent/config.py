@@ -6,7 +6,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-
 ROOT = Path(os.environ.get("T2MA_ROOT", Path(__file__).resolve().parents[2])).resolve()
 
 

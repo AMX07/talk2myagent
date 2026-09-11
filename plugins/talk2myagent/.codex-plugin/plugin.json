@@ -1,19 +1,19 @@
 {
   "name": "talk2myagent",
-  "version": "0.1.0",
-  "description": "Talk2myagent plugin",
+  "version": "0.1.0+codex.20260911202923",
+  "description": "Local customer-support calling with a single Codex agent, open speech models, recording and transcripts.",
   "author": {
     "name": "Local developer"
   },
   "skills": "./skills/",
   "interface": {
-    "displayName": "Talk2myagent",
-    "shortDescription": "Use Talk2myagent in Codex.",
-    "longDescription": "Talk2myagent adds a local Codex plugin scaffold.",
+    "displayName": "talk2myagent",
+    "shortDescription": "Call support from your Mac with local speech.",
+    "longDescription": "Prepare a precise call plan, dial through the Mac Phone app with computer use, listen and speak with local Whisper and Kokoro, then return the transcript and recording.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Help me use Talk2myagent."
+    "defaultPrompt": "Use phone-call to prepare and rehearse an Amazon return call."
   },
   "mcpServers": "./.mcp.json"
 }

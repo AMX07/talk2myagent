@@ -20,7 +20,9 @@ def download_models():
             print(f"Downloading {name} from the upstream release…", flush=True)
             part = path.with_suffix(path.suffix + ".partial")
             urllib.request.urlretrieve(
-                f"https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/{name}", part)
+                f"https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/{name}",
+                part,
+            )
             part.replace(path)
     print(snapshot_download(settings().stt_model), flush=True)
     print("Speech models ready. Inference runs locally.")
@@ -41,20 +43,25 @@ def main():
     req.add_argument("--json", default="{}", help="Arguments JSON, or @/absolute/path.json")
     transcribe = sub.add_parser("transcribe", help="Transcribe an existing local audio file")
     transcribe.add_argument("file", type=Path)
-    test = sub.add_parser("loopback-test", help="Verify both virtual audio buses without making a call")
+    test = sub.add_parser(
+        "loopback-test", help="Verify both virtual audio buses without making a call"
+    )
     test.add_argument("--seconds", type=float, default=1)
     args = parser.parse_args()
     try:
         if args.command == "serve":
             from .service import serve
+
             serve()
         elif args.command == "mcp":
             from .mcp_server import main as mcp_main
+
             mcp_main()
         elif args.command == "models":
             download_models()
         elif args.command == "doctor":
             from .engine import Engine
+
             e = Engine(settings())
             try:
                 print(json.dumps(e.doctor(), indent=2))
@@ -63,6 +70,7 @@ def main():
         elif args.command == "demo":
             from .demo import run_demo
             from .engine import Engine
+
             engine = Engine(settings())
             try:
                 run_demo(engine, args.action)
@@ -70,13 +78,16 @@ def main():
                 engine.shutdown()
         elif args.command == "request":
             from .client import request
+
             data = Path(args.json[1:]).read_text() if args.json.startswith("@") else args.json
             print(json.dumps(request(args.operation, **json.loads(data)), indent=2))
         elif args.command == "transcribe":
             from .speech import Speech
+
             print(json.dumps(Speech(settings()).transcribe_file(args.file.resolve()), indent=2))
         elif args.command == "loopback-test":
             from .diagnostics import loopback_test
+
             result = loopback_test(settings(), args.seconds)
             print(json.dumps(result, indent=2))
             if not result["passed"]:

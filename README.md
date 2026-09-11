@@ -5,8 +5,24 @@ uses the Mac Phone app to dial through your iPhone, and controls speech with loc
 tools. Whisper recognizes the other party; Kokoro speaks Codex's exact words.
 Recordings and transcripts live on your Mac, independent of Apple's recording.
 
-**Development in progress.** See `PROGRESS.md` for the last verified milestone.
-No real Amazon order or account has been modified. Simulations are explicitly labeled.
+**Working local speech demo; live telephone integration awaits hardware setup and validation.**
+The plugin is installed on this Mac. Return and cancellation rehearsals have
+passed using actual local Kokoro synthesis and Whisper transcription. No real
+Amazon order or account has been modified. Simulations are explicitly labeled.
+
+```sh
+cd /Users/anshmittal/Documents/talk2myagent
+uv run t2ma demo --action return
+```
+
+See [setup and live calling](docs/SETUP.md), [platform analysis](docs/DECISIONS.md),
+and [resume notes](PROGRESS.md). Start a new Codex task to load the installed
+`phone-call` skill and its 13 MCP tools. The CLI rehearsal also runs without Codex credits.
+
+Verified: 21 automated tests, real speech round-trip, both Amazon rehearsal paths,
+and the MCP transport through the persistent local service. Speech generation of
+a 3.2-second utterance took 1.6 seconds and its transcription took 1.8 seconds on
+this Mac (one cold-run measurement, not a sustained latency benchmark).
 
 ## Architecture decision
 

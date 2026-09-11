@@ -7,15 +7,25 @@ from .plans import amazon_plan
 
 
 def run_demo(engine: Engine, action: str = "return") -> dict:
-    plan = amazon_plan(action, "Alex Demo", "DEMO-1234", "coffee grinder", "It arrived damaged.",
-                       "+12025550123", "Reserved fictional demonstration number; never dial.", is_demo=True)
+    plan = amazon_plan(
+        action,
+        "Alex Demo",
+        "DEMO-1234",
+        "coffee grinder",
+        "It arrived damaged.",
+        "+12025550123",
+        "Reserved fictional demonstration number; never dial.",
+        is_demo=True,
+    )
     prepared = engine.prepare(plan.model_dump(), "demo")
     call_id = prepared["call_id"]
     print(f"Simulated Amazon {action} · {call_id}", flush=True)
     engine.connect(call_id, prepared["plan_id"])
     try:
         engine.say(call_id, plan.opening)
-        heard = engine.simulate_remote(call_id, "Yes, recording is fine for this simulated call. How can I help?")
+        heard = engine.simulate_remote(
+            call_id, "Yes, recording is fine for this simulated call. How can I help?"
+        )
         print("Support:", heard["event"]["text"], flush=True)
         engine.recording_start(call_id, "Synthetic rehearsal only; no real participants.")
         engine.say(call_id, plan.dialogue["after_recording_consent"])
@@ -34,9 +44,17 @@ def run_demo(engine: Engine, action: str = "return") -> dict:
         heard = engine.simulate_remote(call_id, final)
         print("Support:", heard["event"]["text"], flush=True)
         engine.say(call_id, "Thank you. I will pass the confirmation and next steps to Alex.")
-        result = engine.finish(call_id, "completed", f"Scripted rehearsal of Amazon {action}. No order was changed and no call was placed.")
-        print(json.dumps({k: v for k, v in result.items() if k != "transcript"}, indent=2), flush=True)
+        result = engine.finish(
+            call_id,
+            "completed",
+            f"Scripted rehearsal of Amazon {action}. No order was changed and no call was placed.",
+        )
+        print(
+            json.dumps({k: v for k, v in result.items() if k != "transcript"}, indent=2), flush=True
+        )
         return result
     except BaseException:
-        engine.finish(call_id, "failed", "Rehearsal failed or was interrupted; inspect transcript and logs.")
+        engine.finish(
+            call_id, "failed", "Rehearsal failed or was interrupted; inspect transcript and logs."
+        )
         raise

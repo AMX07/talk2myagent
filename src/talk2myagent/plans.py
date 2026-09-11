@@ -37,17 +37,27 @@ class CallPlan(BaseModel):
 
 
 def amazon_plan(
-    action: Literal["return", "cancel"], customer_name: str, order_id: str,
-    item: str, reason: str, phone_number: str, phone_source: str, is_demo: bool = False,
+    action: Literal["return", "cancel"],
+    customer_name: str,
+    order_id: str,
+    item: str,
+    reason: str,
+    phone_number: str,
+    phone_source: str,
+    is_demo: bool = False,
 ) -> CallPlan:
     request = f"Please help {action} the {item}, order {order_id}. The reason is: {reason}."
     return CallPlan(
-        company="Amazon US", phone_number=phone_number, phone_source=phone_source,
+        company="Amazon US",
+        phone_number=phone_number,
+        phone_source=phone_source,
         objective=f"{action.title()} {item}; obtain the confirmation and next steps.",
         customer_name=customer_name,
         facts={"order_id": order_id, "item": item, "reason": reason, "action": action},
-        opening=(f"Hello, I'm an AI assistant calling on behalf of {customer_name}. "
-                 "May I record and transcribe this conversation to help them follow up?"),
+        opening=(
+            f"Hello, I'm an AI assistant calling on behalf of {customer_name}. "
+            "May I record and transcribe this conversation to help them follow up?"
+        ),
         dialogue={
             "after_recording_consent": request,
             "order_id": f"The order number is {order_id}.",
@@ -63,7 +73,10 @@ def amazon_plan(
             ),
             "close": "Please give me the case or confirmation number. Thank you for your help.",
         },
-        allowed_actions=[f"Request {action} of this exact item only", "Ask for confirmation and next steps"],
+        allowed_actions=[
+            f"Request {action} of this exact item only",
+            "Ask for confirmation and next steps",
+        ],
         stop_conditions=[
             "Account holder must complete identity verification",
             "Any fee, purchase, subscription, or different item/action is proposed",

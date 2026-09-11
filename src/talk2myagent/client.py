@@ -12,8 +12,11 @@ from .config import ROOT, runtime_dir
 
 
 def client() -> httpx.Client:
-    return httpx.Client(transport=httpx.HTTPTransport(uds=str(runtime_dir() / "service.sock")),
-                        base_url="http://localhost", timeout=180)
+    return httpx.Client(
+        transport=httpx.HTTPTransport(uds=str(runtime_dir() / "service.sock")),
+        base_url="http://localhost",
+        timeout=180,
+    )
 
 
 def healthy() -> bool:
@@ -35,9 +38,13 @@ def ensure_service():
             return
         with (runtime / "service.log").open("ab") as log:
             process = subprocess.Popen(
-                [sys.executable, "-m", "talk2myagent", "serve"], cwd=ROOT,
+                [sys.executable, "-m", "talk2myagent", "serve"],
+                cwd=ROOT,
                 env={**os.environ, "T2MA_ROOT": str(ROOT)},
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
             )
         for _ in range(100):
             if healthy():
