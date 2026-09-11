@@ -173,6 +173,7 @@ class SayStream:
         self.emitted = 0
         self.decoded = ""
         self.ack = ""
+        self.used_ack = ""
 
     def _decode(self, raw: str) -> str:
         for trim in range(7):
@@ -222,7 +223,7 @@ class SayStream:
         out: list[str] = []
         if self.ack:
             out.append(self.ack)
-            self.ack = ""
+            self.used_ack, self.ack = self.ack, ""
         for boundary in self.SENTENCE_END.finditer(self.decoded, self.emitted):
             candidate = self.decoded[self.emitted : boundary.start()].strip()
             if len(candidate) >= self.min_chars:
@@ -549,7 +550,7 @@ class LocalConversation:
             raise ValueError("Local model cited nonexistent recipient evidence.")
         if reply.status == "resolved" and not reply.evidence_seq:
             raise ValueError("Local model proposed success without recipient evidence.")
-        metrics["ack"] = stream.ack if on_sentence else ""
+        metrics["ack"] = stream.used_ack if on_sentence else ""
         metrics["first_sentence_seconds"] = round(
             first_sentence or metrics["generation_seconds"], 3
         )
