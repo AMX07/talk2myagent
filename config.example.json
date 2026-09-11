@@ -1,17 +1,22 @@
 {
   "input_device": "BlackHole 16ch",
   "output_device": "BlackHole 2ch",
+  "monitor_device": null,
   "sample_rate": 48000,
-  "stt_model": "mlx-community/whisper-small.en-mlx",
+  "stt_model": "mlx-community/whisper-large-v3-turbo",
   "voice": "af_heart",
-  "silence_seconds": 0.7,
+  "silence_seconds": 0.55,
+  "barge_in_seconds": 0.35,
   "speech_threshold": 0.008,
-  "max_call_seconds": 900,
-  "idle_seconds": 120,
   "vad_backend": "silero",
   "vad_probability": 0.5,
   "conversation_model": "Qwen/Qwen3-8B-MLX-4bit",
+  "conversation_prefix_cache": true,
   "conversation_max_tokens": 180,
   "conversation_timeout_seconds": 20,
-  "conversation_silence_seconds": 30
+  "conversation_silence_seconds": 30,
+  "greeting_wait_seconds": 6,
+  "connect_timeout_seconds": 60,
+  "max_call_seconds": 900,
+  "idle_seconds": 120
 }

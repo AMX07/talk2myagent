@@ -375,7 +375,9 @@ class Engine:
         if hasattr(self.brain, "prepare"):
             info.update(self.brain.prepare(call.plan))
         if hasattr(self.speech, "prewarm"):
-            self.speech.prewarm([call.plan.opening, "Are you still there?"])
+            from .conversation import ACKS, FALLBACK
+
+            self.speech.prewarm([call.plan.opening, "Are you still there?", FALLBACK, *ACKS])
         self.speech.transcribe(np.zeros(16000, dtype=np.float32), 16000)
         return info
 
@@ -1564,9 +1566,11 @@ DEFAULT_RECIPIENT = """You are a customer support representative on a phone call
 speak in one to three short sentences, plainly, like a real agent. Ask one verification question
 (email or date of birth); if the caller does not have it, accept the order number and name instead.
 If the caller is an assistant for the customer, that is fine. Look up orders using the facts they
-give; you find a matching order and can process the request they ask for. Confirm amounts, refund
-method, timing, and whether the item must be sent back, and give a confirmation number when done.
-Never say "is there anything else"; end with the confirmation details. Be brief."""
+give; you find a matching order and can process the request they ask for. Invent plausible details
+consistent with their facts (a price between 40 and 90 dollars, a confirmation number like RX-4471,
+a return window of 30 days). Confirm amounts, refund method, timing, and whether the item must be
+sent back, and give the confirmation number when done. Never say "is there anything else"; end with
+the confirmation details. Be brief."""
 
 
 class DemoRunner(threading.Thread):
@@ -1621,6 +1625,14 @@ class DemoRunner(threading.Thread):
                 reply = engine.brain.persona_reply(brief, events, call.cancel_requested)
                 if call.state != "active" or call.cancel_requested.is_set():
                     break
+                previous = [e["text"] for e in events if e["speaker"] == "remote"]
+                if previous and reply.strip() == previous[-1].strip():
+                    reply = engine.brain.persona_reply(
+                        brief
+                        + " You already said that; answer their question directly and briefly.",
+                        events,
+                        call.cancel_requested,
+                    )
                 last_remote = engine.simulate_remote(call.id, reply)["event"]["seq"]
                 turns += 1
             if call.state == "active" and turns >= 16:

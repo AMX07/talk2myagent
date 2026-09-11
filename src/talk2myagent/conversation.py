@@ -23,6 +23,7 @@ from .plans import CallPlan
 
 class Reply(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    ack: str = Field(default="", max_length=20)
     say: str = Field(default="", max_length=400)
     status: Literal["continue", "resolved", "needs_user"] = "continue"
     evidence_seq: list[int] = Field(default_factory=list)
@@ -31,9 +32,18 @@ class Reply(BaseModel):
 
     @model_validator(mode="after")
     def _has_content(self):
-        if not self.say.strip() and not self.keys:
+        if not self.say.strip() and not self.keys and not self.ack.strip():
             raise ValueError("A reply needs words to say or keys to press.")
+        if self.ack.strip() and self.ack.strip() not in ACKS:
+            self.ack = ""
         return self
+
+    @property
+    def spoken(self) -> str:
+        return " ".join(part for part in (self.ack.strip(), self.say.strip()) if part)
+
+
+ACKS = ("Sure.", "Okay.", "Thanks.", "Got it.", "Understood.", "One moment.", "Alright.")
 
 
 INSTRUCTIONS = """You are the CALLER's conversation agent, speaking on a telephone call on behalf
@@ -66,19 +76,22 @@ Rules:
 - If you have not spoken yet, your first reply must deliver the OPENING below, adapted to
   what you just heard (a human greeting gets the full opening; a menu gets a short answer).
 
-Style: begin with a very short acknowledgment sentence of at most five words (for example
-"Sure." or "Thanks, I have that."), then one or two short sentences, under 45 words in
-total, natural and polite. Ask at most one or two related questions per turn. No reasoning, JSON, stage directions, or labels
+Style: one or two short sentences, under 40 words, natural and polite. Ask at most one or
+two related questions per turn. Do not repeat back what they just said; confirm at most one
+key detail. Never parrot their sentences. No reasoning, JSON, stage directions, or labels
 inside "say". Do not ask "Is there anything else I can help you with?": you are the one
 requesting help. Do not repeat the opening once delivered.
 
 Status: "resolved" ONLY when the other side gave explicit evidence covering EVERY success
 criterion, after mismatches were clarified; then say a brief accurate recap and goodbye.
 "needs_user" when blocked; give a brief explanation and goodbye. Otherwise "continue".
-Any reply that asks a question must use "continue" so you hear the answer.
+Any reply that asks a question or requests something must use "continue" so you hear the
+answer. Never combine a request with resolved.
 
-Return ONLY this JSON object, nothing else, with "say" first:
-{"say":"Exact words to speak","status":"continue|resolved|needs_user","evidence_seq":[],"consent":"unknown|granted|declined","keys":""}
+Return ONLY this JSON object, nothing else, with "ack" first and "say" second:
+{"ack":"Sure.","say":"Exact words to speak","status":"continue|resolved|needs_user","evidence_seq":[],"consent":"unknown|granted|declined","keys":""}
+"ack" is spoken first, immediately: exactly one of "Sure.", "Okay.", "Thanks.", "Got it.",
+"Understood.", "One moment.", "Alright.", or "" for a phone menu or a goodbye.
 evidence_seq holds INTEGER recipient event IDs such as [2, 4] that support a resolved
 outcome; use [] for continue. Never cite your own words.
 
@@ -86,7 +99,7 @@ CALL PLAN:
 """
 
 
-def messages_for(plan: CallPlan, events: list[dict]) -> list[dict]:
+def messages_for(plan: CallPlan, events: list[dict], nudge: str | None = None) -> list[dict]:
     brief = plan.model_dump(exclude={"phone_number", "phone_source", "is_demo", "opening"})
     system = INSTRUCTIONS + json.dumps(brief) + "\n\nOPENING: " + plan.opening
     result = [{"role": "system", "content": system}]
@@ -110,7 +123,12 @@ def messages_for(plan: CallPlan, events: list[dict]) -> list[dict]:
                     if event.get("interrupted")
                     else ""
                 )
-                content = {"say": event["text"] + suffix, "status": "continue", "evidence_seq": []}
+                content = {
+                    "ack": "",
+                    "say": event["text"] + suffix,
+                    "status": "continue",
+                    "evidence_seq": [],
+                }
             result.append({"role": "assistant", "content": json.dumps(content)})
     result.append(
         {
@@ -119,6 +137,7 @@ def messages_for(plan: CallPlan, events: list[dict]) -> list[dict]:
                 f"Now answer the other side AS THE CALLER acting for {plan.customer_name}. "
                 "Check the plan for outstanding confirmations. A first refusal warrants asking "
                 "why or requesting supervisor review. Return only the JSON object."
+                + (" " + nudge if nudge else "")
             ),
         }
     )
@@ -136,6 +155,7 @@ class SayStream:
         self.closed = False
         self.emitted = 0
         self.decoded = ""
+        self.ack = ""
 
     def _decode(self, raw: str) -> str:
         for trim in range(7):
@@ -148,6 +168,8 @@ class SayStream:
                 continue
         return ""
 
+    ACK = re.compile(r'"ack"\s*:\s*"([^"\\]*)"')
+
     def feed(self, text: str) -> list[str]:
         if self.closed:
             return []
@@ -156,6 +178,8 @@ class SayStream:
             if not match:
                 return []
             self.start = match.end()
+            ack = self.ACK.search(text[: match.start()])
+            self.ack = ack[1].strip() if ack and ack[1].strip() in ACKS else ""
         raw = text[self.start :]
         end = None
         position = 0
@@ -177,6 +201,9 @@ class SayStream:
             self.closed = True
         self.decoded = self._decode(raw)
         out: list[str] = []
+        if self.ack:
+            out.append(self.ack)
+            self.ack = ""
         for boundary in self.SENTENCE_END.finditer(self.decoded, self.emitted):
             candidate = self.decoded[self.emitted : boundary.start()].strip()
             if len(candidate) >= self.min_chars:
@@ -197,6 +224,10 @@ DATE = re.compile(
     r"december)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*\d{4})?|\b\d{1,2}/\d{1,2}/\d{2,4}\b"
 )
 CLOSING_QUESTION = re.compile(r"(?i)anything else (?:i|we) can (?:help|assist|do)")
+REQUEST_PATTERN = re.compile(
+    r"(?i)\b(please (?:give|provide|confirm|tell|send|share|read|let me know)|could you|"
+    r"can you|would you|what (?:is|are|was)|when (?:will|is|can)|how (?:long|much|do))\b"
+)
 GREETING_PATTERN = re.compile(
     r"(?i)(how (?:can|may) i help|thank you for calling|thanks for calling|this is \w+|"
     r"\bspeaking\b|how are you|good (?:morning|afternoon|evening)|^hello|^hi\b)"
@@ -365,6 +396,7 @@ class LocalConversation:
         events: list[dict],
         cancel: threading.Event,
         on_sentence=None,
+        nudge: str | None = None,
     ) -> tuple[Reply, dict]:
         stream = SayStream()
         first_sentence = None
@@ -400,7 +432,7 @@ class LocalConversation:
         guarded = False
         try:
             output, metrics = self._generate(
-                messages_for(plan, events), cancel, on_text if on_sentence else None
+                messages_for(plan, events, nudge), cancel, on_text if on_sentence else None
             )
         except _GuardStop:
             guarded = True
@@ -437,7 +469,10 @@ class LocalConversation:
         if blocked:
             metrics["blocked_details"] = blocked
             reply.status = "continue"
-        if "?" in reply.say:
+        if not (on_sentence and spoken):
+            reply.say = reply.spoken
+            reply.ack = ""
+        if "?" in reply.say or REQUEST_PATTERN.search(reply.say):
             reply.status = "continue"
         recipient_ids = {e["seq"] for e in events if e["speaker"] == "remote"}
         if not set(reply.evidence_seq) <= recipient_ids:
@@ -595,6 +630,8 @@ class ConversationWorker(threading.Thread):
         cursor = 0
         last_turn = time.monotonic()
         silence_prompted = False
+        previous_say = ""
+        repeats = 0
         try:
             if self.opening_wait is not None:
                 cursor = self._deliver_opening()
@@ -634,9 +671,16 @@ class ConversationWorker(threading.Thread):
                     on_discard=stop_generation.set,
                 )
                 cancel = _AnyEvent(call.cancel_requested, stop_generation)
+                nudge = (
+                    "Your previous reply repeated an earlier one and they answered it already. "
+                    "Do not repeat it. Take their statement as their answer, then move to the "
+                    "next open item in the plan, or close the call."
+                    if repeats
+                    else None
+                )
                 try:
                     reply, timing = self.brain.respond(
-                        call.plan, events, cancel, on_sentence=sentences.put
+                        call.plan, events, cancel, on_sentence=sentences.put, nudge=nudge
                     )
                 except RuntimeError:
                     sentences.put(None)
@@ -679,6 +723,17 @@ class ConversationWorker(threading.Thread):
                 cursor = latest["seq"]
                 last_turn, silence_prompted = time.monotonic(), False
                 call.conversation["phase"] = "listening"
+                if _normal(reply.say) == previous_say and reply.status == "continue":
+                    repeats += 1
+                    if repeats >= 2:
+                        self._end(
+                            "needs_user",
+                            "The conversation looped on the same question; review the transcript.",
+                        )
+                        return
+                else:
+                    repeats = 0
+                previous_say = _normal(reply.say)
                 if reply.status != "continue" and not (event and event.get("interrupted")):
                     self._end(
                         reply.status,

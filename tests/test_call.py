@@ -46,7 +46,7 @@ class Brain:
         self.prepared.append(plan.fingerprint())
         return {"prefix_cached": True, "prefix_tokens": 900}
 
-    def respond(self, plan, events, cancel, on_sentence=None):
+    def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
         remote = [e for e in events if e["speaker"] == "remote"]
         text, status, consent, keys = next(self.replies)
         if on_sentence and text:

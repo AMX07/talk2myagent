@@ -20,7 +20,7 @@ class Brain:
     def prepare(self, plan):
         return {"prefix_cached": False}
 
-    def respond(self, plan, events, cancel, on_sentence=None):
+    def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
         self.seen.append((plan, events))
         remote = [e for e in events if e["speaker"] == "remote"]
         text, status = next(self.replies)
@@ -93,7 +93,7 @@ def test_stop_during_generation_never_plays_late_reply(engine, scenario):
     generating = threading.Event()
 
     class SlowBrain(Brain):
-        def respond(self, plan, events, cancel, on_sentence=None):
+        def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
             generating.set()
             cancel.wait(3)
             return Reply(say="Too late", status="continue"), {}
@@ -110,14 +110,14 @@ def test_stop_during_generation_never_plays_late_reply(engine, scenario):
 
 def test_new_recipient_information_discards_stale_generated_reply(engine, scenario):
     class UpdatingBrain(Brain):
-        def respond(self, plan, events, cancel, on_sentence=None):
+        def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
             if not self.seen:
                 self.seen.append(events)
                 call.event("remote", "Correction: pickup is tomorrow at four.")
                 if on_sentence:
                     on_sentence("Stale reply")
                 return Reply(say="Stale reply", status="continue"), {}
-            return super().respond(plan, events, cancel, on_sentence)
+            return super().respond(plan, events, cancel, on_sentence, nudge)
 
     brain = UpdatingBrain([("Tomorrow at four, thank you.", "resolved")])
     call = autonomous(engine, scenario, brain)
@@ -219,3 +219,54 @@ def test_streaming_reply_replaces_hallucinated_sentence_with_fallback(scenario):
     brain._generate = lambda messages, cancel, on_text=None: (clean, {"generation_seconds": 0.1})
     reply, _ = brain.respond(scenario.call_plan(), events, threading.Event())
     assert reply.say == "Sure. The ticket is B-42."
+
+
+def test_ack_is_streamed_first_and_requests_stay_open(scenario):
+    import json as json_module
+    import threading
+
+    from talk2myagent.config import Settings
+    from talk2myagent.conversation import LocalConversation, SayStream
+
+    full = json_module.dumps(
+        {
+            "ack": "Sure.",
+            "say": "The ticket is B-42. Please give me the pickup time.",
+            "status": "resolved",
+            "evidence_seq": [2],
+        }
+    )
+    stream, got = SayStream(), []
+    for i in range(1, len(full) + 1):
+        got += stream.feed(full[:i])
+    assert got == ["Sure.", "The ticket is B-42.", "Please give me the pickup time."]
+    brain = LocalConversation(Settings(), threading.Lock())
+    brain._generate = lambda messages, cancel, on_text=None: (full, {"generation_seconds": 0.1})
+    events = [{"seq": 2, "speaker": "remote", "text": "What is the ticket?"}]
+    reply, _ = brain.respond(scenario.call_plan(), events, threading.Event())
+    assert reply.status == "continue"  # a request means we must hear the answer
+    assert reply.say.startswith("Sure. The ticket is B-42.")
+
+
+def test_worker_breaks_a_loop_after_a_nudged_repeat(engine, scenario):
+    class LoopingBrain(Brain):
+        def __init__(self):
+            super().__init__([])
+            self.nudges = []
+
+        def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
+            self.nudges.append(nudge)
+            if on_sentence:
+                on_sentence("Could you confirm the ticket number?")
+            return Reply(say="Could you confirm the ticket number?", status="continue"), {}
+
+    brain = LoopingBrain()
+    call = autonomous(engine, scenario, brain)
+    for text in ["It is B-42.", "Yes, B-42.", "B-42, as I said."]:
+        expected = len(brain.nudges) + 1
+        call.event("remote", text)
+        until(lambda: len(brain.nudges) >= expected)
+    until(lambda: call.result is not None)
+    assert brain.nudges[0] is None and brain.nudges[1] is not None
+    assert call.result["conversation"]["proposal"] == "needs_user"
+    assert "looped" in call.result["summary"]

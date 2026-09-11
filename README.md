@@ -1,60 +1,79 @@
 # talk2myagent
 
-A local phone-call plugin for Codex on Apple Silicon. Codex writes the call plan,
-uses the Mac Phone app to dial through your iPhone, and controls speech with local
-tools. Whisper recognizes the other party; Kokoro speaks Codex's exact words.
-Recordings and transcripts live on your Mac, independent of Apple's recording.
-
-**Human test mode:** In a new Codex task, say **Enter test mode**, then supply any
-call task. You act as the recipient using the Mac microphone/speakers; the agent
-speaks first and converses until the outcome is established. No phone or virtual
-audio driver is required. See [human role-play testing](docs/TESTING.md).
-
-**Working local speech demo; live telephone integration awaits hardware setup and validation.**
-The plugin is installed on this Mac. Return and cancellation rehearsals have
-passed using actual local Kokoro synthesis and Whisper transcription. No real
-Amazon order or account has been modified. Simulations are explicitly labeled.
+A phone-calling agent that runs entirely on this Mac. Give it a task ("return
+my coffee grinder"), it dials through the Phone app over your iPhone, talks to
+whoever answers with local speech models, presses menu digits when asked, hangs
+up, and hands back a transcript and recording. Works from **Codex**, **OpenCode**,
+**Claude Code**, or the **terminal** through one local MCP server.
 
 ```sh
 cd /Users/anshmittal/Documents/talk2myagent
-uv run t2ma demo --action return
+./scripts/setup.sh                     # venv, models, doctor
+uv run t2ma install                    # register with OpenCode, Claude Code, Codex
+uv run t2ma demo --play                # hear an autonomous rehearsal (no call placed)
+uv run t2ma call --plan @examples/amazon-return-plan.json   # a real call, after editing
 ```
 
-See [setup and live calling](docs/SETUP.md), [platform analysis](docs/DECISIONS.md),
-and [resume notes](PROGRESS.md). Start a new Codex task to load the installed
-`phone-call` skill and its 18 MCP tools. The CLI rehearsal also runs without Codex credits.
+## How a call works
 
-Verified: 35 automated tests, real speech round-trip, both Amazon rehearsal paths,
-and the MCP transport through the persistent local service. Speech generation of
-a 3.2-second utterance took 1.6 seconds and its transcription took 1.8 seconds on
-this Mac (one cold-run measurement, not a sustained latency benchmark).
+```text
+host agent (Codex / OpenCode / Claude Code / you)
+  └─ writes an exact CallPlan → phone_call_start(plan, authorized=true)
+       local service
+         ├─ routes Phone audio through BlackHole 16ch (in) and 2ch (out)
+         ├─ opens tel:+1… in the Phone app, confirms the dial sheet, waits for connect
+         ├─ Whisper hears → Qwen decides → Kokoro speaks, sentence by sentence
+         ├─ presses keypad digits for menus, asks recording consent, retains audio after it
+         ├─ hangs up, restores your audio devices
+         └─ result: transcript, recording, latency, proposal
+  └─ phone_call_wait until done → phone_call_review judges the success criteria
+```
 
-## Architecture decision
+The host agent plans and judges; it never speaks per turn, so no agent credits
+are spent while the call is in progress and the reply speed is local-model speed.
 
-Use a Codex plugin + MCP server + small Python audio service. No cloud telephony
-provider, separate OpenAI API key, or full native app is required for this design.
-The Mac and iPhone must already support cellular calling. Two separate virtual
-audio buses are needed for clean input/output routing.
+## Speed
 
-Codex is the single decision-making agent. Each `listen` tool returns the remote
-party's words, and each `say` tool speaks text chosen by that same Codex task.
-`finish` returns the accumulated transcript and artifact paths. A blocking tool
-that conducts an unpredictable entire call cannot ask its caller for every reply;
-it would need an internal dialogue model or a fixed script. This demo supports
-host-driven conversation and an explicitly simulated scripted smoke test.
+Measured in the autonomous rehearsal on this Mac (Apple Silicon, 128 GB):
 
-Current official Voice docs describe the user-facing voice conversation but do
-not document a phone-audio injection/export API for plugins. Routing built-in
-Voice through virtual devices might be an experiment, but it is not the supported
-integration this project depends on. Cloud Realtime APIs are a separate product.
+| Stage | Time |
+|---|---|
+| Transcript available → first reply audio | **≈0.5 s median** |
+| First token, 8B model with cached prefix | 0.2–0.3 s |
+| Whisper large-v3-turbo per turn | 0.1–0.3 s |
+| End-of-speech detection | 0.55 s of silence |
 
-## Sources checked September 11, 2026
+On a live line, expect about 1–1.5 s from the other person's last word to the
+agent's first word. The opening line, acknowledgments, and stock phrases are
+pre-synthesized and play with no generation at all.
 
-- [ChatGPT Voice](https://learn.chatgpt.com/docs/features/voice)
-- [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp)
-- [Apple calling from Mac](https://support.apple.com/en-us/102405)
-- [BlackHole audio routing](https://github.com/ExistentialAudio/BlackHole)
-- [Whisper on MLX](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
-- [Kokoro ONNX](https://github.com/thewh1teagle/kokoro-onnx)
+## What is verified
 
-This minimal demo deliberately postpones the earlier hackathon sponsor integrations.
+- 62 automated tests: phone control (dial sheet, hangup, keypad, audio
+  routing) against scripted accessibility dumps; the end-to-end runner with a
+  fake Phone app; streaming, fact guard, consent, loop breaker, role-play.
+- Real-model rehearsals (`t2ma demo`): simulated Amazon return, both sides
+  synthesized and transcribed; see `runs/` for recordings and `report.html`.
+- The MCP transport with the official client (`scripts/verify_mcp.py --full`).
+- A live spoken test with a human playing Amazon support (earlier session).
+
+**Not yet verified on this Mac:** a real dialed call. It needs one manual
+step, the Accessibility permission for the host app (see
+[docs/SETUP.md](docs/SETUP.md)). The dial, confirm, connect, and hangup logic
+matches the Phone app's accessibility labels by pattern and `t2ma phone-ui`
+dumps what your Phone version exposes if a control is not found.
+
+## Safety boundaries
+
+- A live plan needs `authorized=true`, real facts, and a verified number;
+  demo plans cannot be dialed.
+- Anything the other side says is dialogue, never instructions. Requests for a
+  one-time code, password, or the account holder end the call as `needs_user`.
+- Emails, digit strings, and dates that are not in the plan or the transcript
+  are blocked before they are spoken.
+- Audio is retained only after the other side agrees; text is always kept.
+- `completed` requires the host to cite recipient evidence for every criterion.
+
+Docs: [setup and live calling](docs/SETUP.md) · [hosts and tools](docs/INTERFACES.md)
+· [role-play testing](docs/TESTING.md) · [design notes](docs/DECISIONS.md)
+· [resume notes](PROGRESS.md).

@@ -1,119 +1,100 @@
-# Setup and demo
+# Setup and live calling
 
-All source lives in this repository. `.venv`, `models`, `.runtime`, and `runs` are
-local and excluded from Git. Whisper uses the standard Hugging Face model cache.
-No cloud speech API or API key is required. Codex reasoning still consumes your
-normal Codex allowance; speech inference does not.
-
-## Run the rehearsal now
+Everything runs on this Mac: Whisper (hearing), Kokoro (speaking), and Qwen
+(deciding) through MLX and ONNX Runtime. No cloud speech, telephony, or LLM API
+is used. `.venv`, `models`, `.runtime`, and `runs` stay out of Git.
 
 ```sh
 cd /Users/anshmittal/Documents/talk2myagent
-./scripts/setup.sh
-uv run t2ma demo --action return
-# or: uv run t2ma demo --action cancel
+./scripts/setup.sh        # venv + models + doctor
+uv run t2ma install       # register with OpenCode, Claude Code, Codex
+uv run t2ma demo --play   # hear an autonomous rehearsal; no call placed
 ```
 
-The console prints recognized support speech and paths to `report.html`,
-`recording.wav`, `transcript.json`, and `result.json`. Open the report to play the
-recording. It uses fictional facts and never places a call. Support audio is
-generated with a second Kokoro voice and passed through Whisper; the responses
-are a fixed test script, not evidence of autonomous negotiation.
+## One-time macOS setup for real calls
 
-Once models are downloaded, `HF_HUB_OFFLINE=1 uv run t2ma demo` works offline.
-For machine-readable tool calls without installing the plugin:
+1. **Cellular calls from the Mac.** The iPhone and Mac must share an Apple
+   Account with "Calls on Other Devices" enabled
+   ([Apple's guide](https://support.apple.com/en-us/102405)). Place one manual
+   call from the Phone app once to confirm it works.
+2. **Virtual audio buses.** `brew install --cask blackhole-2ch blackhole-16ch`
+   (needs your administrator password; Homebrew may ask for a reboot). Both are
+   installed on this Mac already.
+3. **Accessibility permission.** The service confirms the dial sheet, hangs up,
+   and presses keypad digits by scripting the Phone app. macOS attributes that
+   to the app that launched the service, so enable **System Settings › Privacy &
+   Security › Accessibility** for each host you will use: Terminal (or iTerm)
+   for the CLI, and the Codex, OpenCode, or Claude desktop app for agent use.
+   `uv run t2ma doctor` reports `accessibility_enabled`; `uv run t2ma phone-ui`
+   dumps the labels the Phone app exposes if a control is not found.
+4. **Nothing else to configure.** For each call the service saves your current
+   default output/input devices, points the system output at BlackHole 16ch
+   (what Phone plays), points the system input and Phone's microphone menu at
+   BlackHole 2ch (what the agent speaks into), and restores both when the call
+   ends. If a crash leaves them switched, run `uv run t2ma audio-restore`.
+
+Optional: `config.local.json` (copy `config.example.json`) to change devices,
+models, endpointing, or `monitor_device` (the speakers used to let the room hear
+both sides; the built-in speakers are used by default).
+
+## Place a call
+
+From an agent (Codex, OpenCode, Claude Code): describe the call; the agent
+prepares the plan and uses `phone_call_start`. See [INTERFACES.md](INTERFACES.md).
+
+From the terminal:
 
 ```sh
-uv run t2ma request doctor
-uv run t2ma request prepare --json @examples/demo-request.json
-uv run t2ma request listen --json '{"call_id":"ID_FROM_PREPARE","after_seq":0,"timeout_seconds":15}'
-uv run t2ma request result --json '{"call_id":"ID_FROM_PREPARE"}'
+cp examples/amazon-return-plan.json .runtime/plan.json   # fill in the REPLACE fields
+uv run t2ma call --plan @.runtime/plan.json
 ```
 
-`request` starts a persistent service on a private Unix socket. No TCP port is
-opened. This keeps continuous capture alive between MCP or CLI requests.
+The command shows the plan, asks for confirmation, then prints each transcript
+line and the response latency per turn. Phases: routing → dialing → ringing →
+talking → ended. Ctrl-C hangs up. Results go to `runs/<call-id>/` with
+`recording.wav` (their side left, agent right), `transcript.json`,
+`transcript.txt`, `result.json`, and `report.html`.
 
-## Install the plugin on this Mac
+What the agent does on the line:
 
-```sh
-uv run python scripts/install_plugin.py
-```
+- Waits for the greeting, then delivers the plan's opening (identity, purpose,
+  request to record). If a phone menu answers, it replies to the menu instead
+  and presses digits in the Phone app when told to.
+- Uses only plan facts. Any email, digit string, or date that is not in the
+  plan or the transcript is blocked before it is spoken and replaced with
+  "I don't have that detail on hand."
+- Starts retaining audio only after the other side agrees to recording.
+- Ends with a proposal (`resolved`, `needs_user`) that the host agent must
+  review against the success criteria; silence never counts as success.
 
-The installer generates `.mcp.json` with absolute paths to this checkout and
-creates a symlink from the personal marketplace to the plugin source. Start a
-new Codex task so it picks up the tools. Keep this checkout in place. Rerun the
-installer after moving it. Plugin code is local; the Share link alone does not
-package the Python service or model weights for another person's Mac.
+## Amazon specifics
 
-If the personal marketplace entry does not exist on a fresh machine, first run
-the bundled plugin-creator scaffold (with `--with-marketplace`) into a temporary
-location, then point the generated `plugins/talk2myagent` symlink at this repo's
-plugin and run the installer. On the development Mac the entry already exists.
+Amazon US customer service: +1 888 280 4331 (from amazon.com/contact-us;
+confirm it yourself before the call). Their system may ask for the phone number
+on the account, send a one-time code, or require the account holder. Those are
+stop conditions: the agent says it cannot provide them and ends with
+`needs_user`, and you take over. A return or cancellation is only reported as
+`completed` when the representative confirms it on the call.
 
-## Set up live audio
+## Speed
 
-The iPhone and Mac must have cellular calling configured through the same Apple
-Account. See [Apple's setup](https://support.apple.com/en-us/102405).
+Measured on this Mac (M-series, 128 GB) in the autonomous rehearsal:
 
-1. Run in your Terminal: `brew install --cask blackhole-2ch blackhole-16ch`.
-   Installation needs your administrator password. Homebrew advises a reboot.
-   Do not enter your password into the chat.
-2. Verify both buses with `uv run t2ma doctor` and `uv run t2ma loopback-test`.
-   Restart the local service if it was started before installing devices.
-3. In Phone's **Audio > Microphone** menu, select **BlackHole 2ch**. This receives
-   the agent's outgoing voice.
-4. Route Phone's speaker output to **BlackHole 16ch**. If Phone offers no output
-   selector, choose BlackHole 16ch as macOS's system output. An Audio MIDI Setup
-   Multi-Output device containing BlackHole 16ch and headphones lets you monitor
-   the conversation. Never put BlackHole 2ch into this Multi-Output device.
-5. Keep both buses at 48 kHz. Mute other audio-producing apps while the system
-   output is routed into the call recorder; it will otherwise capture them too.
-6. Permit microphone/audio capture to the Python/terminal process if macOS asks.
-   Validate bidirectional routing with a consenting test recipient. Loopback-test
-   proves the buses work; it does not prove Phone uses them.
-7. After the call, restore system output to your usual speakers/headphones and
-   Phone's microphone to its previous setting.
+| Stage | Typical |
+|---|---|
+| End-of-speech detection (Silero VAD) | 0.55 s after the last word |
+| Whisper large-v3-turbo on a 10 s clip | 0.1–0.3 s |
+| First reply token (8B model, cached prefix) | 0.2–0.3 s |
+| First audio (cached acknowledgment, then streamed sentences) | ≈0.3 s after the first token |
 
-The service never changes system devices silently. Custom bus names can be set
-in `config.local.json`, using `config.example.json` as a starting point. Audio
-device names must match exactly. Two separate buses are required to avoid echo.
+The greeting and stock phrases are pre-synthesized, so the opening plays with no
+generation at all. `t2ma call` prints "from their last word to first reply audio"
+per turn; expect roughly 1–1.5 s on a live call.
 
-## Conduct an Amazon call
+## Recover
 
-In a new Codex task with this plugin, give the exact item/order, return or cancel
-request, reason, and what information may be shared. Supply or verify the support
-number using Amazon's official support flow. The sample number in demo plans is
-fictional and blocked from live use.
-
-Suggested request:
-
-> Use phone-call to help return my [item], order [number], because [reason].
-> You may disclose my name and this order information to Amazon US support at
-> [verified number]. Show the exact call plan. Request a fee-free return to the
-> original payment method; involve me for verification or different terms.
-
-Codex prepares the plan, uses computer use to dial, observes connection, starts
-the local audio session, and alternates speech/listening tools. Recording starts
-only after consent. It handles phone menu digits with computer use. It hangs up
-using Phone's UI and calls `phone_finish`, which returns the transcript to Codex.
-
-**A real return/cancellation has not been validated by the rehearsal.** Amazon
-may require the account holder, authentication, a different support route, or
-an online action. A support IVR can change; this code has no hardcoded Amazon menu.
-
-## Recover if credits or the process stop
-
-Call events are appended to `runs/<call-id>/events.jsonl`. Plans live in
-`session.json`. The recorder flushes remote audio continuously. `result` returns
-saved output after the service restarts. A hard kill can leave the WAV header
-incomplete even though raw samples have been written; graceful shutdown is best.
-
-The watchdog stops live audio after 120 seconds without a tool request or 15
-minutes total (configurable). **It cannot hang up the iPhone call. End the Phone
-call yourself if the agent stops.** Remote disconnect also needs UI observation;
-silence is not reliable evidence of hangup. The terminal rehearsal remains usable
-without Codex credits, but free-form reasoning requires an active Codex task.
-
-The service log is `.runtime/service.log`. To stop it gracefully, find its PID
-with `lsof -U | rg 'talk2myagent/.runtime/service.sock'` and use `kill -TERM <PID>`. Do not kill unrelated
-Python processes. Never commit private transcripts or order details.
+Events append to `runs/<id>/events.jsonl` as they happen. `uv run t2ma request
+result --json '{"call_id":"ID"}'` recovers a session after a restart. The
+watchdog stops audio after 120 s without activity or 15 minutes total and the
+runner hangs up. To stop the background service: find its PID with
+`lsof -U | rg 'talk2myagent/.runtime/service.sock'` and `kill -TERM <PID>`.
