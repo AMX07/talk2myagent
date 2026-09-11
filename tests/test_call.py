@@ -353,3 +353,114 @@ def test_transcriber_drops_lone_hallucinations():
 
     assert "thank you." in HALLUCINATIONS
     assert np.zeros(2).dtype == np.float64
+
+
+class AskingBrain(Brain):
+    """Replies come as (text, status, consent, keys, question, options)."""
+
+    def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
+        self.prepared = getattr(self, "prepared", [])
+        remote = [e for e in events if e["speaker"] == "remote"]
+        text, status, consent, keys, question, options = next(self.replies)
+        self.seen = getattr(self, "seen", [])
+        self.seen.append([e for e in events if e["speaker"] == "owner"])
+        if on_sentence and text:
+            on_sentence(text)
+        return Reply(
+            say=text,
+            status=status,
+            evidence_seq=[remote[-1]["seq"]] if status == "resolved" and remote else [],
+            consent=consent,
+            keys=keys,
+            question=question,
+            options=options,
+        ), {"generation_seconds": 0.02}
+
+
+def test_agent_holds_the_line_and_resumes_from_the_customers_decision(live_engine):
+    engine, _phone = live_engine
+    engine.config.decision_timeout_seconds = 15
+    engine.brain = AskingBrain(
+        [
+            (
+                "Let me check on that, could you hold a moment?",
+                "needs_user",
+                "unknown",
+                "",
+                "They will only refund $30 of $50. Accept?",
+                ["Accept $30", "Refuse and escalate"],
+            ),
+            ("Thank you, goodbye.", "resolved", "unknown", "", "", []),
+        ]
+    )
+    started = engine.call_start(live_plan(), mode="live", authorized=True)
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    call.event("remote", "I can only refund thirty dollars.")
+
+    until(lambda: (call.decision or {}).get("pending"))
+    state = engine.live_state()
+    assert state["decision"]["question"].startswith("They will only refund")
+    assert state["decision"]["options"] == ["Accept $30", "Refuse and escalate"]
+    assert "hold a moment" in engine.speech.spoken[-1]  # the other side was asked to wait
+
+    engine.decide(call.id, "Refuse and escalate")
+    until(lambda: call.result is not None)
+    # The customer's answer reached the model and the call continued from it.
+    assert any(e["speaker"] == "owner" for e in call.result["transcript"])
+    assert ["Refuse and escalate"] == [
+        e["text"] for e in call.result["transcript"] if e["speaker"] == "owner"
+    ]
+    assert engine.brain.seen[-1], "the second turn must see the customer's instruction"
+    assert call.result["conversation"]["proposal"] == "resolved"
+
+
+def test_an_unanswered_decision_ends_the_call_without_deciding(live_engine):
+    engine, _phone = live_engine
+    engine.config.decision_timeout_seconds = 0.4
+    engine.brain = AskingBrain(
+        [("One moment please.", "needs_user", "unknown", "", "Accept a $10 fee?", ["Yes", "No"])]
+    )
+    started = engine.call_start(live_plan(), mode="live", authorized=True)
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    call.event("remote", "There is a ten dollar restocking fee.")
+    until(lambda: call.result is not None, timeout=10)
+    assert call.result["outcome"] != "completed" and call.result["review_required"]
+    assert "No answer from the customer" in call.result["summary"]
+    assert not any(e["speaker"] == "owner" for e in call.result["transcript"])
+
+
+def test_typed_guidance_prompts_a_turn_and_reaches_the_model(live_engine):
+    engine, _phone = live_engine
+    engine.brain = AskingBrain(
+        [
+            ("Understood, I will ask about the label.", "continue", "unknown", "", "", []),
+            ("Thanks, goodbye.", "needs_user", "unknown", "", "", []),
+        ]
+    )
+    started = engine.call_start(live_plan(), mode="live", authorized=True)
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    until(lambda: engine.speech.spoken)  # let the opening land first
+    engine.guidance(call.id, "Ask them to email the prepaid label.")
+    until(lambda: any("label" in line for line in engine.speech.spoken))
+    owner = [e for e in call.events if e["speaker"] == "owner"]
+    assert owner and owner[0]["text"] == "Ask them to email the prepaid label."
+    assert engine.brain.seen[-1][0]["text"] == "Ask them to email the prepaid label."
+    engine.hangup(call.id)
+    until(lambda: call.phase == "ended")
+
+
+def test_guidance_is_bounded_and_decide_needs_a_pending_question(live_engine):
+    engine, _phone = live_engine
+    engine.brain = AskingBrain([])
+    started = engine.call_start(live_plan(), mode="live", authorized=True)
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    with pytest.raises(ValueError, match="1-500"):
+        engine.guidance(call.id, "   ")
+    with pytest.raises(ValueError, match="No decision is pending"):
+        engine.decide(call.id, "Yes")
+    engine.hangup(call.id)
+    until(lambda: call.phase == "ended")

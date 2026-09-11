@@ -53,6 +53,8 @@ class Session:
         self.demo_clock = 0.0
         self.result: dict | None = None
         self.cancel_requested = threading.Event()
+        self.guidance = threading.Event()
+        self.decision: dict | None = None
         self.scenario: dict | None = None
         self.evaluation: list[dict] = []
         self.audio_config: dict | None = None
@@ -127,6 +129,7 @@ class Session:
             "conversation": dict(self.conversation),
             "review_required": self.review_required,
             "phone": self.phone_state,
+            "decision": self.decision if (self.decision or {}).get("pending") else None,
         }
 
 
@@ -520,6 +523,101 @@ class Engine:
                     }
                 call.condition.wait(timeout=min(0.5, max(0, deadline - time.monotonic())))
 
+    def guidance(self, call_id: str, text: str) -> dict:
+        """The customer types an instruction on the live view while the call runs."""
+        if not text.strip() or len(text) > 500:
+            raise ValueError("Provide 1-500 characters of guidance.")
+        call = self._active(call_id)
+        event = call.event("owner", text.strip(), source="typed")
+        call.guidance.set()
+        with call.condition:
+            call.condition.notify_all()
+        return {"call_id": call.id, "event": event}
+
+    def decide(self, call_id: str, answer: str) -> dict:
+        """Answer the decision the agent is holding the line for."""
+        call = self.get(call_id)
+        if not answer.strip() or len(answer) > 300:
+            raise ValueError("Provide 1-300 characters.")
+        with call.condition:
+            pending = call.decision
+            if not pending or not pending.get("pending"):
+                raise ValueError("No decision is pending for this call.")
+            pending["answer"] = answer.strip()
+            pending["pending"] = False
+            call.guidance.set()
+            call.condition.notify_all()
+        call.event("owner", answer.strip(), source="decision", question=pending["question"])
+        return {"call_id": call.id, "answer": answer.strip()}
+
+    def ask_owner(
+        self, call: Session, question: str, options: list[str], timeout: float | None = None
+    ) -> str | None:
+        """Hold the line and wait for the customer's answer; None if they never answer."""
+        timeout = timeout or self.config.decision_timeout_seconds
+        with call.condition:
+            call.decision = {
+                "question": question,
+                "options": list(options),
+                "pending": True,
+                "answer": None,
+                "asked_at": round(call.elapsed(), 2),
+            }
+            call.conversation["phase"] = "awaiting_customer"
+            call.condition.notify_all()
+        call.event("system", question, kind="decision", options=list(options))
+        deadline = time.monotonic() + timeout
+        with call.condition:
+            while (
+                (call.decision or {}).get("pending")
+                and call.state == "active"
+                and not call.cancel_requested.is_set()
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                # A held call is not an idle call; keep the watchdog off its back.
+                call.last_touch = time.monotonic()
+                call.condition.wait(timeout=min(remaining, 0.3))
+            answer = (call.decision or {}).get("answer")
+            call.decision = None
+            call.conversation["phase"] = "listening"
+        if not answer:
+            call.event("system", "No answer from the customer in time.", kind="decision_timeout")
+        return answer
+
+    def live_state(self, after_seq: int = 0) -> dict:
+        """Whatever session is on the air right now, for the live transcript view."""
+        ranked = sorted(self.sessions.values(), key=lambda c: c.started)
+        running = [c for c in ranked if c.state in {"prepared", "active", "finishing"}]
+        call = (running or ranked or [None])[-1]
+        if call is None:
+            return {"call_id": None, "phase": "idle", "events": [], "cursor": 0, "header": None}
+        with call.condition:
+            events = [
+                dict(e) for e in call.events if e["seq"] > after_seq and e.get("kind") != "latency"
+            ]
+            latencies = [
+                e["speech_end_to_first_audio_seconds"]
+                for e in call.events
+                if e.get("kind") == "latency"
+                and e.get("speech_end_to_first_audio_seconds") is not None
+            ]
+        return {
+            **call.summary(),
+            "events": events,
+            "cursor": len(call.events),
+            "live": call.state in {"prepared", "active", "finishing"},
+            "header": {
+                "company": call.plan.company,
+                "objective": call.plan.objective,
+                "number": None if call.mode != "live" else call.plan.phone_number,
+                "mode": call.mode,
+            },
+            "last_latency": round(latencies[-1], 2) if latencies else None,
+            "can_control": call.state in {"prepared", "active", "finishing"},
+        }
+
     def call_status(self, call_id: str) -> dict:
         call = self.get(call_id)
         return {**call.summary(), "cursor": len(call.events), "result": call.result}
@@ -643,6 +741,38 @@ class Engine:
                 "dialing_enabled": False,
                 "next_step": "When the developer is ready, use test_start. It opens the mic, starts the requested recording, and speaks the greeting automatically.",
             }
+
+    def roleplay_from_task(
+        self,
+        task: str,
+        recipient_role: str,
+        customer_name: str,
+        facts: dict[str, str] | None = None,
+    ) -> dict:
+        """Draft a role-play scenario locally from one sentence of intent."""
+        self.conversation_ready()
+        drafted = self.brain.plan_from_task(
+            task,
+            "+12025550123",
+            "Role-play sentinel; dialing is disabled.",
+            customer_name,
+            recipient_role,
+            facts or {},
+        )
+        return self.test_prepare(
+            {
+                "user_request": task,
+                "recipient_role": recipient_role,
+                "customer_name": customer_name,
+                "objective": drafted.objective,
+                "facts": facts or {},
+                "greeting": drafted.opening,
+                "dialogue": drafted.dialogue,
+                "allowed_actions": drafted.allowed_actions,
+                "stop_conditions": drafted.stop_conditions,
+                "success_criteria": drafted.success_criteria,
+            }
+        )
 
     def test_start(
         self,

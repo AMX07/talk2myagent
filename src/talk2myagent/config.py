@@ -29,6 +29,7 @@ class Settings(BaseModel):
     conversation_max_tokens: int = Field(default=180, ge=32, le=512)
     conversation_timeout_seconds: float = Field(default=20, ge=2, le=60)
     conversation_silence_seconds: float = Field(default=30, ge=5, le=120)
+    decision_timeout_seconds: float = Field(default=150, ge=15, le=600)
     max_call_seconds: int = Field(default=900, ge=30, le=3600)
     idle_seconds: int = Field(default=120, ge=30, le=600)
 

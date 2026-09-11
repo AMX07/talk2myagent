@@ -127,6 +127,20 @@ def main():
     hangup = sub.add_parser("hangup", help="End a call started with `call`")
     hangup.add_argument("call_id")
 
+    sub.add_parser("live", help="Open the live call view in a browser and keep it running")
+
+    roleplay = sub.add_parser(
+        "roleplay", help="Talk to the agent yourself: you play the person it calls"
+    )
+    roleplay.add_argument("--task", required=True, help="What the agent should accomplish")
+    roleplay.add_argument(
+        "--recipient", required=True, help="Who you will play, e.g. 'Amazon support'"
+    )
+    roleplay.add_argument("--name", required=True, help="The customer the agent acts for")
+    roleplay.add_argument("--fact", action="append", default=[], help="key=value, repeatable")
+    roleplay.add_argument("--headphones", action="store_true", help="Allow interrupting the agent")
+    roleplay.add_argument("--no-view", action="store_true", help="Skip the browser view")
+
     sub.add_parser("test", help="Enter human role-play; inspect devices and wait for a task")
     stop = sub.add_parser("test-stop", help="Stop the active human role-play")
     stop.add_argument("call_id", nargs="?")
@@ -233,6 +247,57 @@ def main():
             from .client import request
 
             print(json.dumps(request("hangup", call_id=args.call_id), indent=2))
+        elif args.command == "live":
+            from .live import start_viewer
+
+            server, url = start_viewer()
+            print(f"Live call view: {url}\nLeave this running; press Ctrl-C to close it.")
+            try:
+                while True:
+                    time.sleep(3600)
+            except KeyboardInterrupt:
+                server.shutdown()
+                print("\nViewer closed.")
+        elif args.command == "roleplay":
+            from .client import request
+
+            facts = dict(item.split("=", 1) for item in args.fact)
+            print("Drafting the call plan locally…", flush=True)
+            prepared = request(
+                "roleplay_from_task",
+                task=args.task,
+                recipient_role=args.recipient,
+                customer_name=args.name,
+                facts=facts,
+            )
+            print(json.dumps(prepared["plan"], indent=2))
+            url = None
+            if not args.no_view:
+                from .live import start_viewer
+
+                _server, url = start_viewer()
+            started = request(
+                "test_start",
+                call_id=prepared["call_id"],
+                plan_id=prepared["plan_id"],
+                controller="local",
+                audio_mode="headphones" if args.headphones else "speakers",
+            )
+            print(f"\nRole-play {started['call_id']} live on {started['audio']['input_device']}.")
+            if url:
+                print(f"Live view: {url}")
+            print(
+                "You are now the "
+                + args.recipient
+                + '. Speak after the agent stops. Say "stop test" to end.\n'
+            )
+            try:
+                result = follow_call(started["call_id"])
+            except KeyboardInterrupt:
+                print("\nStopping the test…")
+                request("test_stop", call_id=started["call_id"])
+                result = request("result", call_id=started["call_id"])
+            print_result(result)
         elif args.command == "test":
             from .client import request
 
