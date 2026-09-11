@@ -11,7 +11,7 @@ A real call, placed through the macOS Phone app to the developer's own iPhone as
 
 ## Transcript
 
-Times are seconds from the start of the session. Nothing here is edited except the customer's email address, replaced with a placeholder for publication.
+Times are seconds from the start of the session. Nothing here is edited except the dialed phone number, replaced with a placeholder for publication.
 
 `   0.0s` &nbsp; _system_ &nbsp; Plan prepared; no phone call placed.
 
@@ -19,7 +19,7 @@ Times are seconds from the start of the session. Nothing here is edited except t
 
 `   6.9s` &nbsp; _system_ &nbsp; Audio routed: Phone output -> BlackHole 16ch, Phone microphone -> BlackHole 2ch.
 
-`  12.4s` &nbsp; _system_ &nbsp; Dialed +1 (555) 010-0597 through the Phone app.
+`  12.4s` &nbsp; _system_ &nbsp; Dialed +1 (555) 010-0123 through the Phone app.
 
 `  15.9s` &nbsp; _system_ &nbsp; Call stopped: Call did not connect (call_ended).
 

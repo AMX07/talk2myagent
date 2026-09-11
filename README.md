@@ -44,10 +44,10 @@ Measured in the autonomous rehearsal on this Mac (Apple Silicon, 128 GB):
 
 | Stage | Time |
 |---|---|
-| Transcript available → first reply audio | **≈0.5 s median** |
+| Transcript available → first reply audio | **0.29 s median** |
 | First token, 8B model with cached prefix | 0.2–0.3 s |
 | Whisper large-v3-turbo per turn | 0.1–0.3 s |
-| End-of-speech detection | 0.55 s of silence |
+| End-of-speech detection | 0.56 s of silence |
 
 On a live line, expect about 1–1.5 s from the other person's last word to the
 agent's first word. The opening line, acknowledgments, and stock phrases are
@@ -55,21 +55,22 @@ pre-synthesized and play with no generation at all.
 
 ## What is verified
 
-- 69 automated tests: phone control (keypad dialing, hangup, digits, audio
+- 74 automated tests: phone control (keypad dialing, hangup, digits, audio
   routing) against scripted accessibility dumps; the end-to-end runner with a
   fake Phone app; streaming, fact guard, consent, loop breaker, role-play.
 - Real-model rehearsals (`t2ma demo`): simulated Amazon return, both sides
   synthesized and transcribed; see `runs/` for recordings and `report.html`.
 - The MCP transport with the official client (`scripts/verify_mcp.py --full`).
-- A live spoken test with a human playing Amazon support (earlier session).
+- A live spoken conversation with a human playing Amazon support, at 1.04 s
+  median reply. See the [demo](demo/) for the full transcript.
+- A real dial through the Phone app: the number typed and read back, Call
+  pressed, and the app reporting an active call.
 
-**Not yet verified on this Mac:** a real dialed call. It needs one manual
-step, the Accessibility permission for the host app (see
-[docs/SETUP.md](docs/SETUP.md)). The dial, confirm, connect, and hangup logic
-is verified against the live Phone app up to the Call button: the keypad opens,
-the number types in and reads back, and the popover's Call button is located.
-Only the final press is untested. `t2ma phone-ui` dumps what your Phone version
-exposes if a control is ever not found.
+**Not yet verified on this Mac:** a phone call that stays connected. The only
+call placed went to the iPhone this Mac relays through, so the carrier dropped
+it after ~3.5 s. The in-call window's button labels, live two-way audio, and
+hangup still need one call to a different number. `t2ma phone-ui` dumps what
+your Phone version exposes if a control is ever not found.
 
 ## Safety boundaries
 
@@ -82,6 +83,6 @@ exposes if a control is ever not found.
 - Audio is retained only after the other side agrees; text is always kept.
 - `completed` requires the host to cite recipient evidence for every criterion.
 
-Docs: [setup and live calling](docs/SETUP.md) · [hosts and tools](docs/INTERFACES.md)
+Docs: [the four local models](docs/MODELS.md) · [setup and live calling](docs/SETUP.md) · [hosts and tools](docs/INTERFACES.md)
 · [role-play testing](docs/TESTING.md) · [design notes](docs/DECISIONS.md)
 · [resume notes](PROGRESS.md).

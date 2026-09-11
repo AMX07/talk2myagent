@@ -6,7 +6,9 @@ using local speech models, asks you when a decision is yours to make, hangs up,
 and hands back a transcript and a recording.
 
 No cloud speech API, no telephony provider, no LLM API. Whisper hears, Kokoro
-speaks, Qwen decides, all on the machine.
+speaks, Qwen decides, all on the machine. Only the deciding model matters for
+conversation quality, and it is one line of config to swap: see
+[the four local models](../docs/MODELS.md).
 
 ---
 
@@ -19,7 +21,7 @@ decision in front of you when the agent hits something only you can answer.
 [![The live call view during a conversation](media/live-view-conversation.png)](media/roleplay-live-view.mp4)
 
 **▶ [Watch the 80-second screen recording](media/roleplay-live-view.mp4)** — a
-real conversation with a human on the other end, with audio.
+real conversation with a human on the other end, screen only with no audio.
 
 The view just after a session starts, before anyone has spoken:
 
@@ -35,7 +37,7 @@ What each part does:
 | `1.04s reply` | Measured gap between the other person's last word and the agent's first audio, for the turn just spoken. |
 | `Type to tell the agent what to do…` | Enters the call as an instruction from you. It overrides the plan and the agent acts on it next turn. |
 | Decision card | Appears when the agent needs your call. It holds the line, asks on screen with options, and resumes from your answer. |
-| `Recording` | Audio is being retained. Only appears after the other side agrees. |
+| `Recording` | Audio is being retained. On a live call it appears only after the other side agrees; a role-play starts recorded on the developer's own basis. |
 | `Stop test` / `End call` | Ends the session, hangs up the phone line, restores your audio devices. |
 
 Open it on its own against whatever session is running:
@@ -82,7 +84,8 @@ Measured on an Apple Silicon Mac with 128 GB, from the runs below.
 |---|---|
 | **Human's last word → agent's first audio** | **1.04 s median** (5 turns, live human) |
 | of which: transcript → first audio | 0.34 s |
-| of which: waiting to be sure they finished | 0.55 s |
+| of which: Whisper transcribing the turn | 0.13 s |
+| of which: waiting to be sure they finished | 0.56 s |
 | Whisper large-v3-turbo, per turn | 0.1–0.3 s |
 | First token, Qwen3-8B with a cached prompt prefix | 0.2–0.3 s |
 
@@ -102,7 +105,8 @@ Three things buy that number:
 
 ## Three real runs
 
-Full transcripts, unedited apart from replacing one email address.
+Full transcripts, unedited apart from replacing one email address and the dialed
+phone number. Order numbers in the plans are invented for the demo.
 
 ### [Run 1 — the first real dial](transcripts/01-first-real-dial.md)
 
@@ -134,7 +138,9 @@ These are enforced in code, not just asked for in a prompt.
   number. A plan marked as a demo can never be dialed.
 - **Invented details are blocked before they are spoken.** Any email address,
   digit string, or date in a generated reply that appears nowhere in the plan or
-  the transcript is replaced with "I don't have that detail on hand."
+  the transcript is replaced with "I don't have that detail on hand." This stops
+  fabrication, not mishearing: a number the other side said is allowed even if
+  Whisper garbled it, which run 2 demonstrates.
 - **The other party's words are dialogue, never instructions.** A request for a
   one-time code, a password, or the account holder ends the call for you to take
   over.
@@ -200,9 +206,9 @@ Working and demonstrable today:
   representative and a live human.
 - Dialing, audio routing and restore, and fail-closed handling of a dropped
   call, verified against the real Phone app.
-- The live view as the control surface, including typed guidance and held
-  decisions.
-- 73 automated tests covering phone control against a fake accessibility
+- The live view as the control surface: the transcript, the status, and ending
+  the session, all visible in the recording.
+- 74 automated tests covering phone control against a fake accessibility
   backend, the call runner end to end, streaming, the fact guard, consent,
   decisions, and the loop breaker.
 
@@ -215,3 +221,10 @@ Not yet proven, and honest about it:
 - **Conversation quality is the local 8B model's weak point.** See the flaws
   listed in run 3. The safety rails hold, but the agent needs a stronger local
   model to sound consistently competent.
+- **Typed guidance and held decisions are unit-tested but not in any published
+  run.** No transcript here contains a guidance or a decision event, and the
+  recording shows neither. The composer and the decision card are in the view
+  and covered by tests; this demo does not yet prove them on the air.
+- **The fact guard stops invention, not mishearing.** It only blocks details
+  absent from both the plan and the transcript, so a mis-transcribed number
+  becomes an allowed fact. Run 2 shows exactly that happening.

@@ -53,3 +53,20 @@ Times are seconds from the start of the session. Nothing here is edited except t
   confirmation number before closing.
 - The rehearsal persona invents its own order details. This tests the pipeline, not
   Amazon's policies.
+
+**The interesting failure**
+
+At 33.3 s the representative's price came through as "$1.65. Zero, zero" — Whisper's
+rendering of "$165.00" spoken aloud. The agent then repeated "$1.65" as settled fact,
+twice, including in the closing recap it offered as a resolved outcome.
+
+This is worth more than the latency number. The fact guard blocks any amount, email or
+date that appears in neither the plan nor the transcript, so it stops the agent inventing
+figures. It cannot stop this: the garbled number *was* in the transcript, so it counted as
+something the other side had said. A mis-transcription launders straight into the agent's
+confirmed facts.
+
+Two things limit the damage, neither of which is a fix. The agent cannot act on an amount,
+only repeat it. And `completed` requires the host agent to cite the other side's own words
+per success criterion, so a human reading this transcript would catch the figure before
+the outcome was ever recorded as success. This run was reported as `needs_user`.

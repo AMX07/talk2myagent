@@ -56,14 +56,16 @@ Times are seconds from the start of the session. Nothing here is edited except t
 
 - **1.04 s median** from the human's last word to the agent's first audio, over five
   spoken turns, with only 0.34 s of that being the model and the speech synthesis. The
-  rest is the 0.55 s of silence the endpoint detector waits for before it believes a
-  sentence has finished.
+  rest is 0.56 s of silence the endpoint detector waits for before it believes a
+  sentence has finished, plus 0.13 s of Whisper transcription.
 - Asked for a date of birth it did not have, the agent said so instead of inventing one:
   "I don't have that detail with me. Would the order number and account email be enough
-  to find it?" Any email, digit string, or date absent from the plan and the transcript
-  is blocked before it can be spoken.
+  to find it?" To be precise about the credit: the model declined on its own here. The
+  fact guard, which would have substituted its own wording, never fired in any of these
+  three runs, so this shows the prompt working rather than the backstop.
 - Recording consent was detected from ordinary speech ("Yes, you can record it") rather
-  than a keyword, and audio retention started only at that point.
+  than a keyword. Retention here had already begun at 4.6 s on the developer's own
+  test-start basis; the gate that withholds audio until consent applies to live calls.
 
 **What went wrong, honestly**
 

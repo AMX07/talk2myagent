@@ -10,3 +10,7 @@ runs/
 .DS_Store
 .env
 config.local.json
+# Written by `t2ma install` with absolute paths to the local checkout.
+.mcp.json
+opencode.json
+plugins/talk2myagent/.mcp.json
