@@ -50,7 +50,7 @@ agent is listening. For an immediate keyboard-based stop, including during
 playback, type **stop test** in Codex or run:
 
 ```sh
-cd /Users/anshmittal/Documents/talk2myagent
+cd talk2myagent
 uv run t2ma test-stop
 ```
 

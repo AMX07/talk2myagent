@@ -5,7 +5,7 @@ Everything runs on this Mac: Whisper (hearing), Kokoro (speaking), and Qwen
 is used. `.venv`, `models`, `.runtime`, and `runs` stay out of Git.
 
 ```sh
-cd /Users/anshmittal/Documents/talk2myagent
+cd talk2myagent
 ./scripts/setup.sh        # venv + models + doctor
 uv run t2ma install       # register with OpenCode, Claude Code, Codex
 uv run t2ma demo --play   # hear an autonomous rehearsal; no call placed

@@ -5,7 +5,7 @@ to a persistent background service on a private Unix socket, so models stay
 loaded between calls and every host sees the same sessions under `runs/`.
 
 ```sh
-cd /Users/anshmittal/Documents/talk2myagent
+cd talk2myagent
 ./scripts/setup.sh          # venv, models, doctor
 uv run t2ma install         # registers the server with OpenCode, Claude Code, and Codex
 ```
