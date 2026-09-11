@@ -105,7 +105,7 @@ class AXElement:
             if self.ref:
                 _cf.CFRelease(self.ref)
                 self.ref = 0
-        except Exception:  # noqa: BLE001 - interpreter shutdown can clear globals
+        except Exception:  # noqa: BLE001, S110 - interpreter shutdown can clear globals
             pass
 
     def _copy(self, attribute: str) -> int | None:
