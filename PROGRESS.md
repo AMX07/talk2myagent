@@ -1,96 +1,79 @@
 # Resume here
 
-## Current state — September 11, 2026
+## Current state — September 11, 2026 (evening)
 
-Working local speech demo, human role-play test mode, and installed Codex plugin. **No live Amazon call has
-been made by this project, and no real order has been changed.**
+Demo-ready autonomous caller, multi-host. **No real dialed call has been made
+yet by the software; the last blocker is a one-time macOS permission.**
 
-### Human role-play update
+### What changed today (later session)
 
-- Developer explicitly wants to supply the task at test-time. Do not pick a
-  preset task or start microphone capture before that task/readiness is provided.
-- Say **Enter test mode**, then describe a task in Codex. The agent prepares it,
-  switches the developer to the recipient role, speaks its greeting, and keeps
-  using listen/say until an outcome. It returns to task-owner mode for results.
-- Added `phone_test_mode`, `phone_test_prepare`, `phone_test_start`,
-  `phone_test_finish`, and `phone_test_stop` (18 MCP tools total).
-- Physical MacBook mic/speaker selected; 48 kHz mono format preflight passed.
-  No microphone was opened for the preparation/transport checks. Human speech
-  quality and task completion await the developer's interactive test.
-- Speakers suppress microphone input during playback + 450 ms tail. Headphones
-  support basic barge-in. This is not an acoustic echo canceller.
-- Test-mode dialing/keypad/synthetic recipient injection are rejected. Success
-  requires checks citing actual recipient transcript event IDs. The judge is
-  Codex; evidence semantics are not independently verified by another model.
-- 35 tests pass; Ruff passes. Updated MCP test passed with 18 tools, arbitrary
-  role-play preparation/cancellation, and original actual speech round-trip.
-  Transport verification: `runs/20260911-205535-7343f2fb/`.
-- Both BlackHole devices are now present on the host (installed since the initial
-  build). Role-play uses physical devices and does not require those drivers.
-- Read `docs/TESTING.md` for entry, startup, stop, and result flows.
+- `phone_call_start` runs a whole call: route audio (CoreAudio via ctypes),
+  dial `tel:` in Phone.app, confirm the dial sheet and detect connection
+  (accessibility scripting), converse with the local model, press keypad
+  digits, hang up, restore devices, return transcript + recording + latency.
+- Speed: Qwen3-8B with a cached prompt prefix, sentence-streamed Kokoro, fixed
+  acknowledgments played from cache, Whisper large-v3-turbo, Silero endpoint at
+  0.55 s. Rehearsal (`runs/20260911-222218-25609adf`): median 0.36 s from
+  transcript to first reply audio; whole 6-turn call in 25 s wall clock.
+- Safety: per-sentence fact guard (emails, digit strings, dates not in plan or
+  transcript are replaced with a fallback), deterministic opening on a human
+  greeting, consent-gated audio retention, request→continue rule, loop breaker.
+- Hosts: `uv run t2ma install` writes `opencode.json`, `.mcp.json`,
+  `.claude/skills/phone-call/`, and refreshes the Codex plugin manifest.
+  Tool names are identical everywhere (`phone_*`).
+- CLI without any agent: `t2ma plan`, `t2ma call`, `t2ma demo [--play]`,
+  `t2ma hangup`, `t2ma phone-ui`, `t2ma phone-state`, `t2ma audio-restore`.
+- 62 tests; `scripts/verify_mcp.py --full` runs a demo call through MCP.
 
-The earlier build checkpoints below are historical; the update above is current.
+### To make the first real call
 
-All source is in `/Users/anshmittal/Documents/talk2myagent`. Git is on `main`.
-Run `git log --oneline` to see incremental checkpoints. `uv.lock` pins packages.
+1. Grant Accessibility (System Settings › Privacy & Security › Accessibility)
+   to the host app: Terminal for `t2ma call`, or the Codex / OpenCode / Claude
+   desktop app. `uv run t2ma doctor` must show `accessibility_enabled: true`.
+2. `uv run t2ma phone-ui` with the Phone app open: confirm the dump shows the
+   labels the matcher expects (a `Call` confirm button after `open tel:`, an
+   `End`/`End Call` button and a `m:ss` timer during a call, a `keypad`
+   button). Adjust the regexes at the top of `src/talk2myagent/macphone.py` if
+   this Phone version uses other words.
+3. Copy `examples/amazon-return-plan.json`, fill the REPLACE fields with real
+   order details, and run `uv run t2ma call --plan @.runtime/plan.json`.
+   Listen through the built-in speakers (monitor). Ctrl-C hangs up.
+4. Watch for: the confirm click (if the sheet is not detected in 12 s the run
+   fails without dialing), connection detection (timer text), and the
+   Phone microphone menu (the service selects BlackHole 2ch; if the menu item
+   name differs, the system-default input is still switched).
 
-## Verified
+### Known limits
 
-- Host: macOS 27, Apple Silicon, 128 GiB RAM.
-- User confirmed US Amazon and iPhone calling already configured on this Mac.
-- Phone's Audio menu exposes microphone selection; no output selector was seen.
-- Kokoro model + voices downloaded to `models/`; Whisper small.en in the standard
-  Hugging Face cache. Local synthesis/transcription round-trip succeeded.
-- Return rehearsal: `runs/20260911-202727-ea92a830/`.
-- Cancellation rehearsal (HF_HUB_OFFLINE=1): `runs/20260911-202913-8227952d/`.
-- Real MCP integration: `runs/20260911-202915-e6444b6a/`; 13 tools exposed, actual
-  synthesized request, remote synthesis → Whisper, transcript and recording returned.
-- 21 automated tests passed; Ruff passed before final documentation changes.
-- Skill and plugin validators passed.
-- Plugin installed with `codex plugin add talk2myagent@personal`. Start a **new
-  Codex task** for tool discovery. The installer reruns the cachebuster flow.
-- The personal marketplace's `./plugins/talk2myagent` resolves from the user's
-  home. `~/plugins/talk2myagent` is a symlink into this repo, not a second code copy.
-- Browser URL policy blocked previewing the local HTML file. Audio structure and
-  report content are validated by code; visual browser inspection was not completed.
+- The `codex` CLI was not on PATH in this session, so the plugin cachebuster
+  was not bumped; the plugin directory is a symlink into this repo, so new
+  Codex tasks still load the updated skill and `.mcp.json`.
+- Qwen3-8B sometimes over-confirms or asks for something already given; the
+  loop breaker closes after two identical turns. A stronger local model can be
+  set in `config.local.json` (`conversation_model`) if quality matters more.
+- The persona in `t2ma demo` invents its own details; it tests the pipeline,
+  not Amazon's policies.
+- Barge-in during agent speech is energy-based over BlackHole; hold music
+  could trigger it on a live call.
 
-## Next required live-call steps
-
-1. User runs `brew install --cask blackhole-2ch blackhole-16ch` in their Terminal.
-   Attempted install reached sudo and stopped because it needs their password.
-   Homebrew says a reboot may be required. Do not request the password in chat.
-2. Run `uv run t2ma doctor` and `uv run t2ma loopback-test`. Configure Phone input
-   to 2ch and Phone/system output to 16ch. Verify with a consenting test recipient.
-3. Obtain real order/item/reason, allowed disclosure/action, and verified support
-   number. Present the concrete call plan. Existing authorization applies within
-   its scope; do not re-ask for actions the user already approved.
-4. Conduct the call through computer use + tools and return actual artifacts.
-
-## Important boundaries
-
-- Codex is the only reasoning agent; Whisper/Kokoro are speech components.
-- `phone_dial_request` and `phone_keypad` return instructions, not executed UI actions.
-- Computer use owns dialing, connection observation, keypad, and hangup.
-- Watchdog stops audio after inactivity or max duration but **cannot hang up**.
-- `phone_finish` returns the complete available transcript and flags missing hangup.
-- RMS voice activity detection is simple; hold music/noise can trigger false speech
-  or interruption. Telephone routing, interruption, and IVR remain untested live.
-- Rehearsal dialogue is scripted. Passing it proves the audio/tool pipeline, not
-  autonomous negotiation or Amazon acceptance of an AI caller.
-- Raw remote audio is saved only after recording_start. Recognized text and
-  generated outgoing speech are persisted even before audio recording starts.
-
-## Commands
+### Commands
 
 ```sh
 uv run pytest -q
 uv run ruff check src tests scripts
-uv run t2ma demo --action return
-uv run python scripts/verify_mcp.py
-uv run t2ma request doctor
-uv run python scripts/install_plugin.py
+uv run t2ma doctor
+uv run t2ma demo --play
+uv run python scripts/verify_mcp.py --full
+uv run t2ma install
 ```
 
-The persistent service uses `.runtime/service.sock` (private Unix socket) and
-`.runtime/service.log`. Stop only its own PID with SIGTERM if restarting it. No
-models, credentials, or private call artifacts are committed to Git.
+The persistent service listens on `.runtime/service.sock`; stop it with
+`kill -TERM` on the PID from `lsof -U | rg 'talk2myagent/.runtime/service.sock'`
+after code changes so the next command starts the new code.
+
+## Earlier milestones (still valid)
+
+- Human role-play mode (`phone_test_*`) verified live on September 11 with the
+  developer playing Amazon support; `controller` values are now `local`/`host`.
+- Scripted rehearsal (`t2ma demo --scripted`) and the original manual tool set
+  remain for debugging.

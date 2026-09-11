@@ -265,8 +265,8 @@ def test_worker_breaks_a_loop_after_a_nudged_repeat(engine, scenario):
     for text in ["It is B-42.", "Yes, B-42.", "B-42, as I said."]:
         expected = len(brain.nudges) + 1
         call.event("remote", text)
-        until(lambda: len(brain.nudges) >= expected)
+        until(lambda n=expected: len(brain.nudges) >= n)
     until(lambda: call.result is not None)
-    assert brain.nudges[0] is None and brain.nudges[1] is not None
+    assert brain.nudges[:2] == [None, None] and brain.nudges[2] is not None
     assert call.result["conversation"]["proposal"] == "needs_user"
     assert "looped" in call.result["summary"]

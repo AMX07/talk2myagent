@@ -65,7 +65,15 @@ def install_codex(python: Path) -> str:
     (plugin / ".mcp.json").write_text(
         json.dumps({"mcpServers": {"phone": server_entry(python)}}, indent=2) + "\n"
     )
-    if shutil.which("codex") is None:
+    codex = shutil.which("codex") or next(
+        (
+            str(candidate)
+            for candidate in [Path("/Applications/ChatGPT.app/Contents/Resources/codex")]
+            if candidate.exists()
+        ),
+        None,
+    )
+    if codex is None:
         return "codex CLI not found; plugin manifest updated only."
     marketplace = Path.home() / ".agents/plugins/marketplace.json"
     if not marketplace.exists():
@@ -92,7 +100,7 @@ def install_codex(python: Path) -> str:
         )
     else:
         name = data.get("name", "personal")
-    subprocess.run(["codex", "plugin", "add", f"talk2myagent@{name}"], check=True)
+    subprocess.run([codex, "plugin", "add", f"talk2myagent@{name}"], check=True)
     return f"Installed talk2myagent@{name}; start a new Codex task."
 
 
