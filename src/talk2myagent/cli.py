@@ -132,11 +132,10 @@ def main():
     roleplay = sub.add_parser(
         "roleplay", help="Talk to the agent yourself: you play the person it calls"
     )
-    roleplay.add_argument("--task", required=True, help="What the agent should accomplish")
-    roleplay.add_argument(
-        "--recipient", required=True, help="Who you will play, e.g. 'Amazon support'"
-    )
-    roleplay.add_argument("--name", required=True, help="The customer the agent acts for")
+    roleplay.add_argument("--scenario", help="Scenario JSON, or @/path/to/scenario.json")
+    roleplay.add_argument("--task", help="What the agent should accomplish (drafted locally)")
+    roleplay.add_argument("--recipient", help="Who you will play, e.g. 'Amazon support'")
+    roleplay.add_argument("--name", help="The customer the agent acts for")
     roleplay.add_argument("--fact", action="append", default=[], help="key=value, repeatable")
     roleplay.add_argument("--headphones", action="store_true", help="Allow interrupting the agent")
     roleplay.add_argument("--no-view", action="store_true", help="Skip the browser view")
@@ -261,15 +260,21 @@ def main():
         elif args.command == "roleplay":
             from .client import request
 
-            facts = dict(item.split("=", 1) for item in args.fact)
-            print("Drafting the call plan locally…", flush=True)
-            prepared = request(
-                "roleplay_from_task",
-                task=args.task,
-                recipient_role=args.recipient,
-                customer_name=args.name,
-                facts=facts,
-            )
+            if args.scenario:
+                scenario = load_json_argument(args.scenario)
+                prepared = request("test_prepare", scenario=scenario)
+                args.recipient = scenario["recipient_role"]
+            elif args.task and args.recipient and args.name:
+                print("Drafting the call plan locally…", flush=True)
+                prepared = request(
+                    "roleplay_from_task",
+                    task=args.task,
+                    recipient_role=args.recipient,
+                    customer_name=args.name,
+                    facts=dict(item.split("=", 1) for item in args.fact),
+                )
+            else:
+                raise ValueError("Pass --scenario, or --task with --recipient and --name.")
             print(json.dumps(prepared["plan"], indent=2))
             url = None
             if not args.no_view:
