@@ -46,7 +46,7 @@ class Brain:
         self.prepared.append(plan.fingerprint())
         return {"prefix_cached": True, "prefix_tokens": 900}
 
-    def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
+    def respond(self, plan, events, cancel, on_sentence=None, nudge=None, avoid_ack=""):
         remote = [e for e in events if e["speaker"] == "remote"]
         text, status, consent, keys = next(self.replies)
         if on_sentence and text:
@@ -358,7 +358,7 @@ def test_transcriber_drops_lone_hallucinations():
 class AskingBrain(Brain):
     """Replies come as (text, status, consent, keys, question, options)."""
 
-    def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
+    def respond(self, plan, events, cancel, on_sentence=None, nudge=None, avoid_ack=""):
         self.prepared = getattr(self, "prepared", [])
         remote = [e for e in events if e["speaker"] == "remote"]
         text, status, consent, keys, question, options = next(self.replies)

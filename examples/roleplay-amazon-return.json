@@ -7,14 +7,14 @@
     "order_id": "113-4429911",
     "item": "coffee grinder",
     "reason": "it arrived with a cracked burr and will not power on",
-    "account_email": "mittalansh9@gmail.com",
+    "account_email": "ansh@example.com",
     "delivered": "eight days ago",
     "unknown": "the purchase amount and the card's last four digits were not provided"
   },
   "greeting": "Hi, this is an AI assistant calling on behalf of Ansh about a coffee grinder that arrived broken. May I record and transcribe this call so I can pass the details back to him?",
   "dialogue": {
     "person_answers": "Ansh received a coffee grinder that arrived with a cracked burr and will not power on. He would like to return it for a full refund to the original card.",
-    "asked_for_account": "The order number is 113-4429911 and the account email is mittalansh9@gmail.com.",
+    "asked_for_account": "The order number is 113-4429911 and the account email is ansh@example.com.",
     "asked_for_something_unknown": "I don't have that detail with me. Would the order number and account email be enough to find it?",
     "offered_less": "Ansh asked for a full refund to the original card, so I would need to check with him before agreeing to anything else. Could you tell me why a full refund isn't available?",
     "return_steps": "What are the return instructions and the deadline? Is there a prepaid label, and can I have a confirmation number?",

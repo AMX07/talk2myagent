@@ -13,6 +13,7 @@ import queue
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -164,8 +165,9 @@ class SayStream:
 
     SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=\S)")
 
-    def __init__(self, min_chars: int = 4):
+    def __init__(self, min_chars: int = 4, avoid_ack: str = ""):
         self.min_chars = min_chars
+        self.avoid_ack = avoid_ack
         self.start: int | None = None
         self.closed = False
         self.emitted = 0
@@ -194,7 +196,9 @@ class SayStream:
                 return []
             self.start = match.end()
             ack = self.ACK.search(text[: match.start()])
-            self.ack = ack[1].strip() if ack and ack[1].strip() in ACKS else ""
+            chosen = ack[1].strip() if ack and ack[1].strip() in ACKS else ""
+            # Saying "Sure." on every turn sounds like a machine; use it at most once in a row.
+            self.ack = "" if chosen == self.avoid_ack else chosen
         raw = text[self.start :]
         end = None
         position = 0
@@ -281,6 +285,16 @@ class _GuardStop(Exception):
     pass
 
 
+def resolve_model(name: str, download: bool = False) -> str:
+    """A model may be a Hugging Face repo id or a local folder, as LM Studio keeps its own."""
+    local = Path(name).expanduser()
+    if local.is_dir():
+        return str(local)
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(name, local_files_only=not download)
+
+
 def _tidy(draft: dict, schema: dict) -> dict:
     """Forgive a small model's formatting: lists for strings, strings for lists."""
     if not isinstance(draft, dict):
@@ -313,17 +327,18 @@ class LocalConversation:
         with self.lock:
             if self.model is None:
                 try:
-                    from huggingface_hub import snapshot_download
                     from mlx_lm import load
                 except ImportError as exc:
                     raise RuntimeError(
                         "Install local inference: uv sync --extra voice --extra local"
                     ) from exc
+                name = self.config.conversation_model
                 try:
-                    path = snapshot_download(self.config.conversation_model, local_files_only=True)
+                    path = resolve_model(name)
                 except Exception as exc:
                     raise RuntimeError(
-                        "Local conversation model missing. Run: uv run t2ma conversation-model"
+                        f"Conversation model {name!r} is not downloaded. "
+                        "Run: uv run t2ma conversation-model"
                     ) from exc
                 self.model, self.tokenizer = load(path)
         return {
@@ -333,11 +348,22 @@ class LocalConversation:
             "thinking": False,
         }
 
+    def _template(self, messages: list[dict], generation_prompt: bool = True) -> str:
+        try:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=generation_prompt,
+                enable_thinking=False,
+            )
+        except (TypeError, ValueError):
+            # Templates that take no enable_thinking flag; thinking is stripped downstream.
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=generation_prompt
+            )
+
     def _encode(self, messages: list[dict]) -> list[int]:
-        prompt = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
-        )
-        return list(self.tokenizer.encode(prompt))
+        return list(self.tokenizer.encode(self._template(messages)))
 
     def prepare(self, plan: CallPlan) -> dict:
         """Cache the constant prefix (instructions + plan) so each turn only prefills history."""
@@ -352,9 +378,7 @@ class LocalConversation:
             from mlx_lm.generate import generate_step
             from mlx_lm.models.cache import make_prompt_cache
 
-            system_only = self.tokenizer.apply_chat_template(
-                messages_for(plan, [])[:1], tokenize=False, add_generation_prompt=False
-            )
+            system_only = self._template(messages_for(plan, [])[:1], generation_prompt=False)
             tokens = list(self.tokenizer.encode(system_only))
             started = time.monotonic()
             cache = make_prompt_cache(self.model)
@@ -438,8 +462,9 @@ class LocalConversation:
         cancel: threading.Event,
         on_sentence=None,
         nudge: str | None = None,
+        avoid_ack: str = "",
     ) -> tuple[Reply, dict]:
-        stream = SayStream()
+        stream = SayStream(avoid_ack=avoid_ack)
         first_sentence = None
         started = time.monotonic()
         allowed = (
@@ -492,7 +517,9 @@ class LocalConversation:
                     except _GuardStop:
                         pass
                 if spoken:
+                    # The streamed sentences already carry the acknowledgment.
                     reply.say = " ".join(spoken)
+                    reply.ack = ""
             else:
                 bad = unsupported_details(reply.say, allowed)
                 if bad:
@@ -511,6 +538,8 @@ class LocalConversation:
             metrics["blocked_details"] = blocked
             reply.status = "continue"
         if not (on_sentence and spoken):
+            if reply.ack == avoid_ack:
+                reply.ack = ""
             reply.say = reply.spoken
             reply.ack = ""
         if "?" in reply.say or REQUEST_PATTERN.search(reply.say):
@@ -520,6 +549,7 @@ class LocalConversation:
             raise ValueError("Local model cited nonexistent recipient evidence.")
         if reply.status == "resolved" and not reply.evidence_seq:
             raise ValueError("Local model proposed success without recipient evidence.")
+        metrics["ack"] = stream.ack if on_sentence else ""
         metrics["first_sentence_seconds"] = round(
             first_sentence or metrics["generation_seconds"], 3
         )
@@ -682,6 +712,7 @@ class ConversationWorker(threading.Thread):
         last_turn = time.monotonic()
         silence_prompted = False
         previous_say = ""
+        previous_ack = ""
         repeats = 0
         try:
             if self.opening_wait is not None:
@@ -734,7 +765,12 @@ class ConversationWorker(threading.Thread):
                 )
                 try:
                     reply, timing = self.brain.respond(
-                        call.plan, events, cancel, on_sentence=sentences.put, nudge=nudge
+                        call.plan,
+                        events,
+                        cancel,
+                        on_sentence=sentences.put,
+                        nudge=nudge,
+                        avoid_ack=previous_ack,
                     )
                 except RuntimeError:
                     sentences.put(None)
@@ -775,6 +811,7 @@ class ConversationWorker(threading.Thread):
                     else None,
                 )
                 cursor = latest_seq
+                previous_ack = timing.get("ack", "")
                 last_turn, silence_prompted = time.monotonic(), False
                 call.conversation["phase"] = "listening"
                 if _normal(reply.say) == previous_say and reply.status == "continue":

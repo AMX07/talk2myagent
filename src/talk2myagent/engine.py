@@ -271,12 +271,12 @@ class Engine:
             defaults = {kind: core.default(kind) for kind in ("output", "input")}
         except (PhoneControlError, OSError) as exc:
             defaults = {"error": str(exc)}
-        try:
-            from huggingface_hub import snapshot_download
+        from .conversation import resolve_model
 
-            snapshot_download(self.config.conversation_model, local_files_only=True)
+        try:
+            resolve_model(self.config.conversation_model)
             conversation_model = True
-        except Exception:  # noqa: BLE001 - any failure means the model is not cached
+        except Exception:  # noqa: BLE001 - any failure means the model is not available
             conversation_model = False
         try:
             from huggingface_hub import snapshot_download

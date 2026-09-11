@@ -171,9 +171,9 @@ def main():
         elif args.command == "models":
             download_models()
         elif args.command == "conversation-model":
-            from huggingface_hub import snapshot_download
+            from .conversation import resolve_model
 
-            print(snapshot_download(settings().conversation_model))
+            print(resolve_model(settings().conversation_model, download=True))
         elif args.command == "install":
             from .install import install_all
 

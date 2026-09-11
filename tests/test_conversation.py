@@ -20,7 +20,7 @@ class Brain:
     def prepare(self, plan):
         return {"prefix_cached": False}
 
-    def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
+    def respond(self, plan, events, cancel, on_sentence=None, nudge=None, avoid_ack=""):
         self.seen.append((plan, events))
         remote = [e for e in events if e["speaker"] == "remote"]
         text, status = next(self.replies)
@@ -93,7 +93,7 @@ def test_stop_during_generation_never_plays_late_reply(engine, scenario):
     generating = threading.Event()
 
     class SlowBrain(Brain):
-        def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
+        def respond(self, plan, events, cancel, on_sentence=None, nudge=None, avoid_ack=""):
             generating.set()
             cancel.wait(3)
             return Reply(say="Too late", status="continue"), {}
@@ -110,14 +110,14 @@ def test_stop_during_generation_never_plays_late_reply(engine, scenario):
 
 def test_new_recipient_information_discards_stale_generated_reply(engine, scenario):
     class UpdatingBrain(Brain):
-        def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
+        def respond(self, plan, events, cancel, on_sentence=None, nudge=None, avoid_ack=""):
             if not self.seen:
                 self.seen.append(events)
                 call.event("remote", "Correction: pickup is tomorrow at four.")
                 if on_sentence:
                     on_sentence("Stale reply")
                 return Reply(say="Stale reply", status="continue"), {}
-            return super().respond(plan, events, cancel, on_sentence, nudge)
+            return super().respond(plan, events, cancel, on_sentence, nudge, avoid_ack)
 
     brain = UpdatingBrain([("Tomorrow at four, thank you.", "resolved")])
     call = autonomous(engine, scenario, brain)
@@ -254,7 +254,7 @@ def test_worker_breaks_a_loop_after_a_nudged_repeat(engine, scenario):
             super().__init__([])
             self.nudges = []
 
-        def respond(self, plan, events, cancel, on_sentence=None, nudge=None):
+        def respond(self, plan, events, cancel, on_sentence=None, nudge=None, avoid_ack=""):
             self.nudges.append(nudge)
             if on_sentence:
                 on_sentence("Could you confirm the ticket number?")
@@ -270,3 +270,37 @@ def test_worker_breaks_a_loop_after_a_nudged_repeat(engine, scenario):
     assert brain.nudges[:2] == [None, None] and brain.nudges[2] is not None
     assert call.result["conversation"]["proposal"] == "needs_user"
     assert "looped" in call.result["summary"]
+
+
+def test_an_acknowledgment_is_never_doubled_or_repeated_next_turn(scenario):
+    import threading as t
+
+    from talk2myagent.config import Settings
+    from talk2myagent.conversation import LocalConversation
+
+    brain = LocalConversation(Settings(), t.Lock())
+    canned = (
+        '{"ack": "Sure.", "say": "The ticket is B-42.", "status": "continue", "evidence_seq": []}'
+    )
+
+    def fake(messages, cancel, on_text=None, max_tokens=None):
+        for i in range(1, len(canned) + 1):
+            if on_text:
+                on_text(canned[:i])
+        return canned, {"generation_seconds": 0.1}
+
+    brain._generate = fake
+    events = [{"seq": 2, "speaker": "remote", "text": "Which ticket?"}]
+    spoken = []
+    reply, metrics = brain.respond(scenario.call_plan(), events, t.Event(), spoken.append)
+    assert spoken == ["Sure.", "The ticket is B-42."]
+    assert reply.say == "Sure. The ticket is B-42."  # the ack is not added a second time
+    assert reply.spoken == reply.say and metrics["ack"] == "Sure."
+
+    # The same acknowledgment twice in a row sounds robotic, so it is dropped.
+    spoken = []
+    reply, metrics = brain.respond(
+        scenario.call_plan(), events, t.Event(), spoken.append, avoid_ack="Sure."
+    )
+    assert spoken == ["The ticket is B-42."] and metrics["ack"] == ""
+    assert reply.say == "The ticket is B-42."

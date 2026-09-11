@@ -7,12 +7,18 @@ up, and hands back a transcript and recording. Works from **Codex**, **OpenCode*
 **Claude Code**, or the **terminal** through one local MCP server.
 
 ```sh
-cd /Users/anshmittal/Documents/talk2myagent
+cd talk2myagent
 ./scripts/setup.sh                     # venv, models, doctor
 uv run t2ma install                    # register with OpenCode, Claude Code, Codex
 uv run t2ma demo --play                # hear an autonomous rehearsal (no call placed)
 uv run t2ma call --plan @examples/amazon-return-plan.json   # a real call, after editing
 ```
+
+## See it working
+
+**[▶ Demo: screen recording, three full transcripts, and the measured latencies](demo/)**
+
+[![The live call view](demo/media/live-view-conversation.png)](demo/)
 
 ## How a call works
 
