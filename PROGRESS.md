@@ -26,10 +26,34 @@ Demo-ready autonomous caller, multi-host. Everything except the final
 - Hosts: `uv run t2ma install` writes `opencode.json`, `.mcp.json`,
   `.claude/skills/phone-call/`, and registers the Codex plugin.
 
+### First real dial — September 11, 2026, 23:10
+
+`runs/20260911-231023-3133f866`. Dialed the developer's own iPhone as a
+self-test. The Phone app entered a call state, then the carrier dropped it
+after ~3.5 s, which is the expected outcome when the Mac relays through the
+same iPhone it is dialing.
+
+Proven by that call:
+
+- The keypad dial path works end to end against the real Phone app: keypad
+  opened, number typed and read back, Call pressed, and the app reported an
+  active call.
+- Audio routed automatically (Phone output to BlackHole 16ch, microphone to
+  BlackHole 2ch) and restored to "Use System Setting" afterwards, with the
+  system defaults never touched.
+- The runner failed closed on the drop: outcome `failed`, reason
+  `call did not connect (call_ended)`, no invented conversation, devices
+  restored, no stale `.runtime/audio-defaults.json`, no call left hanging.
+
+Still unproven, because the call never connected: a sustained conversation,
+the in-call window's button labels, two-way audio over a live line, and
+hangup. Those need a call to a number that is not this iPhone.
+
 ### What is left for a real call
 
-1. **Place one short test call** to a number you control (or a recorded test
-   line), with the monitor on so you hear both sides:
+1. **Place one short test call to a number other than this iPhone** (a second
+   phone, a friend who is expecting it, or a recorded test line), with the
+   monitor on so you hear both sides:
    ```sh
    uv run t2ma call --plan @.runtime/plan.json
    ```

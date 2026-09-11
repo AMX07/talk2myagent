@@ -1,0 +1,34 @@
+{
+  "company": "Ansh's own phone (hearing check)",
+  "phone_number": "+15550000000",
+  "phone_source": "The developer's own phone number, supplied by them for a self-test",
+  "objective": "Confirm the two-way audio path works: the person answering hears the agent clearly, and the agent hears and transcribes their reply.",
+  "customer_name": "Ansh",
+  "facts": {
+    "purpose": "a short audio test of a local calling agent",
+    "caller": "an AI assistant running on Ansh's own Mac",
+    "nothing_is_requested": "no account, order, or personal detail is involved"
+  },
+  "opening": "Hi, this is an automated test call from Ansh's own Mac. I am checking whether you can hear me clearly. Can you hear me?",
+  "dialogue": {
+    "confirm_audio": "Thank you. Can you hear me clearly, and is the volume alright?",
+    "asked_what_this_is": "This is a local voice agent Ansh is testing on his Mac. Nothing is being requested and no information is needed.",
+    "count_back": "Could you say a short sentence back so I can check that I hear you?",
+    "close": "That is everything I needed. Thank you, goodbye."
+  },
+  "allowed_actions": [
+    "Ask whether the agent is audible and clear",
+    "Ask the person to say a short sentence back",
+    "Explain that this is a local audio test"
+  ],
+  "stop_conditions": [
+    "The person cannot hear the agent",
+    "Voicemail answers instead of a person",
+    "The person asks the agent to stop or hang up"
+  ],
+  "success_criteria": [
+    "The person confirms they can hear the agent",
+    "The agent transcribes at least one spoken reply from the person"
+  ],
+  "is_demo": false
+}
