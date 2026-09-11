@@ -20,11 +20,12 @@ uv run t2ma demo --play   # hear an autonomous rehearsal; no call placed
 2. **Virtual audio buses.** `brew install --cask blackhole-2ch blackhole-16ch`
    (needs your administrator password; Homebrew may ask for a reboot). Both are
    installed on this Mac already.
-3. **Accessibility permission.** The service confirms the dial sheet, hangs up,
-   and presses keypad digits by scripting the Phone app. macOS attributes that
-   to the app that launched the service, so enable **System Settings › Privacy &
-   Security › Accessibility** for each host you will use: Terminal (or iTerm)
-   for the CLI, and the Codex, OpenCode, or Claude desktop app for agent use.
+3. **Accessibility permission.** The service types the number into Phone's
+   keypad, presses Call, hangs up, and presses menu digits through the macOS
+   Accessibility API. macOS attributes that to the app that launched the
+   service, so enable **System Settings › Privacy & Security › Accessibility**
+   for each host you will use: Terminal (or iTerm) for the CLI, and the Codex,
+   OpenCode, or Claude desktop app for agent use.
    `uv run t2ma doctor` reports `accessibility_enabled`; `uv run t2ma phone-ui`
    dumps the labels the Phone app exposes if a control is not found.
 4. **Nothing else to configure.** For each call the service saves your current

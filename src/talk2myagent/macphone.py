@@ -1,11 +1,17 @@
-"""Control the macOS Phone app and CoreAudio defaults without third-party tools.
+"""Control the macOS Phone app and audio routing without third-party tools.
 
-Dialing uses the system ``tel:`` handler (Phone.app). Confirming, observing,
-hanging up, and pressing keypad digits use accessibility scripting through
-``osascript``, which needs the host application (Terminal, Codex, OpenCode,
-Claude) to be allowed under System Settings > Privacy & Security > Accessibility.
-Audio routing uses CoreAudio through ctypes. Every mutation is reversible and the
-previous defaults are saved to ``.runtime`` for recovery.
+Dialing uses the Phone app's own keypad popover: type the number into its
+"Phone number" field, read it back, and press that popover's Call button (the
+Recents list has a Call button per row, so scoping matters). ``tel:`` links are
+silently ignored on this macOS build when opened from a script, so they are not
+used.
+
+All UI reading and pressing goes through the in-process Accessibility binding in
+:mod:`axapi`, which needs the app that launched this service (Terminal, Codex,
+OpenCode, Claude) to be allowed under System Settings > Privacy & Security >
+Accessibility. Audio is routed through Phone's own Audio menu (Output and
+Microphone sections), falling back to the CoreAudio system defaults. Every
+mutation is reversible and the previous state is saved under ``.runtime``.
 """
 
 from __future__ import annotations
@@ -20,15 +26,21 @@ import time
 from pathlib import Path
 from typing import ClassVar
 
+from . import axapi
 from .config import runtime_dir
 
 PHONE_BUNDLE = "com.apple.mobilephone"
+PHONE_PROCESS = "Phone"
 END_PATTERN = re.compile(r"(?i)^(end( call)?|hang ?up|end and accept)$")
 CONFIRM_PATTERN = re.compile(r"(?i)^(call|dial)$")
 KEYPAD_PATTERN = re.compile(r"(?i)^(keypad|show keypad|dial pad)$")
 PROGRESS_PATTERN = re.compile(r"(?i)^(calling|connecting|ringing|dialing)")
 TIMER_PATTERN = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
 ENDED_PATTERN = re.compile(r"(?i)^(call ended|call failed|busy|declined)")
+CONTAINER_ROLES = {"AXWindow", "AXSheet", "AXPopover", "AXDialog"}
+INTERESTING_ROLES = {"AXButton", "AXMenuButton", "AXStaticText", "AXTextField", "AXRadioButton"}
+LEAF_ROLES = {"AXButton", "AXMenuButton", "AXStaticText", "AXRadioButton"}
+NUMBER_FIELD = "Phone number"
 
 
 class PhoneControlError(RuntimeError):
@@ -39,41 +51,8 @@ class AccessibilityError(PhoneControlError):
     pass
 
 
-def _escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def osascript(script: str, timeout: float = 20) -> str:
-    try:
-        completed = subprocess.run(
-            ["osascript", "-"],
-            input=script,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise PhoneControlError("Phone app scripting timed out.") from exc
-    if completed.returncode != 0:
-        message = completed.stderr.strip() or completed.stdout.strip()
-        if "-1719" in message or "assistive access" in message or "-25211" in message:
-            raise AccessibilityError(
-                "macOS Accessibility permission is missing for the app running talk2myagent. "
-                "Enable it in System Settings > Privacy & Security > Accessibility for the host "
-                "app (Terminal, Codex, OpenCode, or Claude), then retry."
-            )
-        raise PhoneControlError(message or "osascript failed")
-    return completed.stdout
-
-
 def accessibility_enabled() -> bool:
-    try:
-        return (
-            osascript('tell application "System Events" to UI elements enabled').strip() == "true"
-        )
-    except PhoneControlError:
-        return False
+    return axapi.trusted()
 
 
 # ---------------------------------------------------------------- CoreAudio ---
@@ -168,40 +147,51 @@ class CoreAudio:
 
 
 class AudioRouting:
-    """Route Phone's audio through the two virtual buses, and restore afterwards."""
+    """Route Phone's audio through the two virtual buses, and restore afterwards.
+
+    Preferred: Phone's own Audio menu (Output -> incoming bus, Microphone ->
+    outgoing bus), which leaves the rest of the Mac alone. Fallback per
+    direction: the system default device, which Phone follows under
+    "Use System Setting".
+    """
 
     def __init__(self, incoming_bus: str, outgoing_bus: str, phone: PhoneApp | None = None):
         self.incoming_bus, self.outgoing_bus = incoming_bus, outgoing_bus
         self.core = CoreAudio()
         self.phone = phone
         self.saved: dict | None = None
+        self.menu: dict[str, bool] = {}
         self.state_file = runtime_dir() / "audio-defaults.json"
 
     def apply(self) -> dict:
-        self.saved = {kind: self.core.default(kind) for kind in ("output", "input")}
-        self.state_file.write_text(json.dumps(self.saved))
-        # Phone plays the far end on the default output; our recorder reads that bus.
-        self.core.set_default("output", self.incoming_bus)
-        # Phone's "Use System Setting" microphone follows the default input; we speak into it.
-        self.core.set_default("input", self.outgoing_bus)
-        microphone = None
-        if self.phone is not None:
-            try:
-                microphone = self.phone.set_microphone(self.outgoing_bus)
-            except PhoneControlError as exc:
-                microphone = f"menu unchanged: {exc}"
+        self.saved = {}
+        self.menu = {}
+        plan = {"Output": ("output", self.incoming_bus), "Microphone": ("input", self.outgoing_bus)}
+        for section, (kind, device) in plan.items():
+            done = False
+            if self.phone is not None:
+                try:
+                    done = self.phone.set_audio(section, device)
+                except PhoneControlError:
+                    done = False
+            self.menu[section] = done
+            if not done:
+                self.saved[kind] = self.core.default(kind)
+                self.core.set_default(kind, device)
+        self.state_file.write_text(json.dumps({"defaults": self.saved, "menu": self.menu}))
         return {
-            "previous": dict(self.saved),
             "output": self.incoming_bus,
             "input": self.outgoing_bus,
-            "phone_microphone": microphone,
+            "phone_menu": dict(self.menu),
+            "system_defaults_changed": dict(self.saved),
         }
 
     def restore(self) -> dict:
-        saved = self.saved
+        saved, menu = self.saved, self.menu
         if saved is None and self.state_file.exists():
-            saved = json.loads(self.state_file.read_text())
-        if not saved:
+            state = json.loads(self.state_file.read_text())
+            saved, menu = state.get("defaults", {}), state.get("menu", {})
+        if saved is None:
             return {"restored": False}
         for kind, name in saved.items():
             try:
@@ -209,181 +199,330 @@ class AudioRouting:
             except PhoneControlError:
                 continue
         if self.phone is not None:
-            try:
-                self.phone.set_microphone("Use System Setting")
-            except PhoneControlError:
-                pass
+            for section, used in (menu or {}).items():
+                if used:
+                    try:
+                        self.phone.set_audio(section, "Use System Setting")
+                    except PhoneControlError:
+                        pass
         self.state_file.unlink(missing_ok=True)
         self.saved = None
-        return {"restored": True, **saved}
+        return {"restored": True, "defaults": saved, "menu": menu}
 
 
 # ---------------------------------------------------------------- Phone.app ---
 
-_SNAPSHOT = """
-tell application "System Events"
-  if not (exists process "Phone") then return "NOPROCESS"
-  tell process "Phone"
-    set out to ""
-    repeat with w in windows
-      set out to out & "W|" & (name of w) & "|" & (subrole of w) & linefeed
-      repeat with el in entire contents of w
-        try
-          set r to role of el
-          if r is in {"AXButton", "AXStaticText", "AXTextField", "AXMenuButton", "AXSheet", "AXPopUpButton", "AXGroup", "AXRadioButton"} then
-            set n to ""
-            try
-              set n to name of el
-            end try
-            set d to ""
-            try
-              set d to description of el
-            end try
-            set v to ""
-            try
-              set v to value of el
-            end try
-            if (n is not "") or (d is not "") or (v is not "") then
-              set out to out & r & "|" & n & "|" & d & "|" & v & linefeed
-            end if
-          end if
-        end try
-      end repeat
-    end repeat
-    return out
-  end tell
-end tell
-"""
 
-_CLICK = """
-tell application "System Events"
-  tell process "Phone"
-    repeat with w in windows
-      repeat with el in entire contents of w
-        try
-          if role of el is "{role}" then
-            set n to ""
-            try
-              set n to name of el
-            end try
-            set d to ""
-            try
-              set d to description of el
-            end try
-            if n is "{label}" or d is "{label}" then
-              click el
-              return "clicked"
-            end if
-          end if
-        end try
-      end repeat
-    end repeat
-    return "missing"
-  end tell
-end tell
-"""
+class Node:
+    """One UI element, flattened out of the accessibility tree."""
 
-_MENU = """
-tell application "System Events"
-  tell process "Phone"
-    click menu item "{item}" of menu 1 of menu bar item "Audio" of menu bar 1
-    return "clicked"
-  end tell
-end tell
-"""
+    __slots__ = ("container", "description", "element", "name", "role", "value")
+
+    def __init__(self, role, name="", description="", value="", container="AXWindow", element=None):
+        self.role, self.name, self.description = role, name, description
+        self.value, self.container, self.element = value, container, element
+
+    @property
+    def labels(self) -> list[str]:
+        return [text for text in (self.name, self.description) if text]
+
+    def matches(self, label: str) -> bool:
+        # Recents rows spell a row as "+1 (888) 280-4331, Outgoing …, Call"; match the head.
+        return any(
+            text == label or text.split(",")[0].strip() == label or text.split(" ")[0] == label
+            for text in self.labels
+        )
+
+    def press(self) -> bool:
+        return bool(self.element and self.element.press())
+
+    def set_text(self, value: str) -> bool:
+        return bool(self.element and self.element.set_text(value))
+
+    def as_dict(self) -> dict:
+        return {
+            "role": self.role,
+            "name": self.name,
+            "description": self.description,
+            "value": self.value,
+            "container": self.container,
+        }
+
+
+class MenuItem:
+    __slots__ = ("element", "enabled", "mark", "section", "title")
+
+    def __init__(self, title, enabled=True, mark="", section="", element=None):
+        self.title, self.enabled, self.mark = title, enabled, mark
+        self.section, self.element = section, element
+
+    def press(self) -> bool:
+        return bool(self.element and self.element.press())
+
+
+class AXPhoneBackend:
+    """Reads and drives the real Phone app through the Accessibility API."""
+
+    def __init__(self, process_name: str = PHONE_PROCESS):
+        self.process_name = process_name
+        self._pid: int | None = None
+        self._app: axapi.AXElement | None = None
+
+    def _application(self) -> axapi.AXElement | None:
+        pid = axapi.pid_of(self.process_name)
+        if pid is None:
+            self._pid, self._app = None, None
+            return None
+        if pid != self._pid or self._app is None:
+            self._pid, self._app = pid, axapi.application(pid)
+        return self._app
+
+    def running(self) -> bool:
+        return self._application() is not None
+
+    def launch(self, background: bool = False) -> None:
+        command = ["open", "-b", PHONE_BUNDLE] + (["-g"] if background else [])
+        subprocess.run(command, check=True, capture_output=True, timeout=15)
+
+    def quit(self) -> None:
+        subprocess.run(
+            ["osascript", "-e", 'tell application "Phone" to quit'],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+
+    def windows(self) -> list[axapi.AXElement]:
+        app = self._application()
+        return app.elements("AXWindows") if app else []
+
+    def nodes(self) -> list[Node]:
+        if not axapi.trusted():
+            raise AccessibilityError(
+                "macOS Accessibility permission is missing for the app running talk2myagent. "
+                "Enable it in System Settings > Privacy & Security > Accessibility for the host "
+                "app (Terminal, Codex, OpenCode, or Claude), then retry."
+            )
+        found: list[Node] = []
+
+        def walk(element: axapi.AXElement, container: str, depth: int) -> None:
+            if depth > 30:
+                return
+            role = element.role
+            if role in CONTAINER_ROLES:
+                container = role
+            elif role in INTERESTING_ROLES:
+                name, description = element.labels
+                value = element.text("AXValue")
+                if name or description or value:
+                    found.append(Node(role, name, description, value, container, element))
+                if role in LEAF_ROLES:
+                    return  # a Recents row is a button whose children add nothing
+            for child in element.elements():
+                walk(child, container, depth + 1)
+
+        for window in self.windows():
+            walk(window, "AXWindow", 0)
+        return found
+
+    def menu(self, title: str) -> list[MenuItem]:
+        app = self._application()
+        if app is None:
+            return []
+        bar = app.element("AXMenuBar")
+        if bar is None:
+            return []
+        for item in bar.elements():
+            if item.text("AXTitle") != title:
+                continue
+            menus = item.elements()
+            if not menus:
+                return []
+            items: list[MenuItem] = []
+            section = ""
+            for entry in menus[0].elements():
+                name = entry.text("AXTitle")
+                enabled = entry.flag("AXEnabled")
+                # Phone labels its sections with disabled items ("Microphone", "Output").
+                if not enabled and name in {"Microphone", "Output"}:
+                    section = name
+                    continue
+                items.append(
+                    MenuItem(name, enabled, entry.text("AXMenuItemMarkChar"), section, entry)
+                )
+            return items
+        return []
 
 
 class PhoneApp:
-    def __init__(self, runner=None):
-        self.run = runner or osascript
+    def __init__(self, backend: AXPhoneBackend | None = None):
+        self.backend = backend or AXPhoneBackend()
 
-    def open(self, url: str | None = None) -> None:
-        command = ["open", "-g", "-b", PHONE_BUNDLE]
-        if url:
-            command.append(url)
-        subprocess.run(command, check=True, capture_output=True, timeout=15)
+    # ------------------------------------------------------------ reading ---
 
-    def snapshot(self) -> list[dict]:
-        raw = self.run(_SNAPSHOT)
-        if raw.strip() == "NOPROCESS":
-            return []
-        elements = []
-        for line in raw.splitlines():
-            parts = line.split("|", 3)
-            if len(parts) < 4:
-                if len(parts) == 3 and parts[0] == "W":
-                    elements.append({"role": "AXWindow", "name": parts[1], "subrole": parts[2]})
-                continue
-            role, name, description, value = parts
-            elements.append(
-                {"role": role, "name": name, "description": description, "value": value}
-            )
-        return elements
+    def snapshot(self) -> list[Node]:
+        return self.backend.nodes()
+
+    def mute_enabled(self) -> bool:
+        """An enabled Mute item is the most reliable "a call is up" signal."""
+        return any(item.title == "Mute" and item.enabled for item in self.backend.menu("Audio"))
+
+    def audio_selection(self) -> dict[str, str]:
+        return {
+            item.section: item.title
+            for item in self.backend.menu("Audio")
+            if item.section and item.mark
+        }
 
     @staticmethod
-    def interpret(elements: list[dict]) -> dict:
-        labels = []
-        for element in elements:
-            for key in ("name", "description", "value"):
-                text = str(element.get(key, "")).strip()
-                if text:
-                    labels.append((element["role"], text))
-        buttons = [text for role, text in labels if role in {"AXButton", "AXMenuButton"}]
-        texts = [text for role, text in labels if role == "AXStaticText"]
+    def interpret(nodes: list[Node], mute_enabled: bool = False) -> dict:
+        buttons, dialog_buttons, texts = [], [], []
+        number_field = None
+        keypad_open = False
+        for node in nodes:
+            if node.container in {"AXSheet", "AXPopover", "AXDialog"}:
+                keypad_open = keypad_open or node.container == "AXPopover"
+            if node.role == "AXTextField" and NUMBER_FIELD in node.labels:
+                number_field = node.value
+            if node.role in {"AXButton", "AXMenuButton"}:
+                buttons.extend(node.labels)
+                if node.container in {"AXSheet", "AXPopover", "AXDialog"}:
+                    dialog_buttons.extend(node.labels)
+            elif node.role == "AXStaticText":
+                texts.extend(node.labels + ([node.value] if node.value else []))
         end_button = next((b for b in buttons if END_PATTERN.match(b)), None)
-        confirm_button = next((b for b in buttons if CONFIRM_PATTERN.match(b)), None)
+        confirm_button = next((b for b in dialog_buttons if CONFIRM_PATTERN.match(b)), None)
         keypad_button = next((b for b in buttons if KEYPAD_PATTERN.match(b)), None)
         timer = next((t for t in texts if TIMER_PATTERN.match(t)), None)
         progress = next((t for t in texts if PROGRESS_PATTERN.match(t)), None)
         ended = next((t for t in texts if ENDED_PATTERN.match(t)), None)
-        in_call = end_button is not None
+        in_call = end_button is not None or mute_enabled
         return {
-            "running": bool(elements),
+            "running": bool(nodes),
             "in_call": in_call,
             "connected": in_call and (timer is not None or progress is None),
+            "mute_enabled": mute_enabled,
             "progress": progress,
             "timer": timer,
             "ended_notice": ended,
             "end_button": end_button,
             "confirm_button": confirm_button,
             "keypad_button": keypad_button,
+            "keypad_open": keypad_open,
+            "number_field": number_field,
             "buttons": buttons[:40],
             "texts": texts[:40],
         }
 
     def state(self) -> dict:
-        return self.interpret(self.snapshot())
+        nodes = self.snapshot()
+        return self.interpret(nodes, self.mute_enabled() if nodes else False)
 
-    def click(self, label: str, role: str = "AXButton") -> bool:
-        result = self.run(_CLICK.format(role=role, label=_escape(label))).strip()
-        return result == "clicked"
+    # ------------------------------------------------------------ acting ----
+
+    def find(
+        self,
+        label: str,
+        role: str = "AXButton",
+        scope: str = "any",
+        nodes: list[Node] | None = None,
+    ) -> Node | None:
+        for node in nodes if nodes is not None else self.snapshot():
+            if node.role != role or (scope != "any" and node.container != scope):
+                continue
+            if node.matches(label):
+                return node
+        return None
+
+    def click(self, label: str, role: str = "AXButton", scope: str = "any") -> bool:
+        node = self.find(label, role, scope)
+        return bool(node and node.press())
+
+    def set_field(self, label: str, value: str) -> str:
+        node = self.find(label, role="AXTextField")
+        if node is None:
+            raise PhoneControlError(f"Text field {label!r} not found.")
+        node.set_text(value)
+        time.sleep(0.15)
+        refreshed = self.find(label, role="AXTextField")
+        return refreshed.value if refreshed else ""
+
+    def set_audio(self, section: str, device: str) -> bool:
+        """Select a device in Phone's Audio menu; section is 'Output' or 'Microphone'."""
+        for item in self.backend.menu("Audio"):
+            if item.section == section and item.title == device and item.enabled:
+                return item.press()
+        return False
 
     def set_microphone(self, name: str) -> str:
-        self.run(_MENU.format(item=_escape(name)))
+        if not self.set_audio("Microphone", name):
+            raise PhoneControlError(f"Microphone {name!r} is not in Phone's Audio menu.")
         return name
 
-    def dial(self, number: str, confirm_timeout: float = 12, poll: float = 0.5) -> dict:
-        """Open the tel: URL, accept Phone's confirmation, and report the first call state."""
+    # ------------------------------------------------------------ lifecycle -
+
+    def ensure_window(self, timeout: float = 15) -> int:
+        """Phone launched hidden can have no window at all; relaunching restores it."""
+        self.backend.launch()
+        deadline = time.monotonic() + timeout
+        relaunched = False
+        while time.monotonic() < deadline:
+            windows = len(self.backend.windows())
+            if windows:
+                return windows
+            if not relaunched:
+                self.backend.quit()
+                time.sleep(2)
+                self.backend.launch()
+                relaunched = True
+            time.sleep(0.5)
+        raise PhoneControlError("The Phone app did not show a window; open it manually.")
+
+    def dial(
+        self, number: str, confirm_timeout: float = 15, poll: float = 0.5, dry_run: bool = False
+    ) -> dict:
+        """Dial through the keypad popover and report the first call state.
+
+        dry_run stops after the number is typed and verified; nothing is called.
+        """
         if not re.fullmatch(r"\+[1-9][0-9]{7,14}", number):
             raise PhoneControlError("Dial requires an E.164 number.")
-        self.open(f"tel:{number}")
+        self.ensure_window()
+        state = self.state()
+        if state["in_call"]:
+            raise PhoneControlError("A call is already in progress in the Phone app.")
+        if not state["keypad_open"]:
+            if not self.click("keypad"):
+                raise PhoneControlError("Keypad button not found in the Phone app.")
+            time.sleep(0.8)
+        shown = self.set_field(NUMBER_FIELD, number)
+        digits = re.sub(r"\D", "", number)
+        if not re.sub(r"\D", "", shown).endswith(digits):
+            raise PhoneControlError(f"Keypad shows {shown!r}; expected {number}. Not dialing.")
+        if dry_run:
+            return {"number": number, "typed": shown, "dialed": False, **self.state()}
+        if not self.click("Call", scope="AXPopover"):
+            raise PhoneControlError("Keypad Call button not found; nothing dialed.")
         deadline = time.monotonic() + confirm_timeout
-        confirmed = False
-        state = {}
-        while time.monotonic() < deadline:
-            state = self.state()
-            if state["in_call"]:
-                break
-            if state["confirm_button"] and not confirmed:
-                confirmed = self.click(state["confirm_button"])
+        state = self.state()
+        while time.monotonic() < deadline and not state["in_call"]:
+            if state["confirm_button"] and not state["keypad_open"]:
+                self.click(state["confirm_button"], scope="AXSheet")
             time.sleep(poll)
-        return {"number": number, "confirmed": confirmed, **state}
+            state = self.state()
+        return {"number": number, "typed": shown, "dialed": True, "confirmed": True, **state}
+
+    def clear_keypad(self) -> None:
+        try:
+            self.set_field(NUMBER_FIELD, "")
+        except PhoneControlError:
+            pass
 
     def wait_connected(self, timeout: float = 45, poll: float = 1.0, settle: float = 6) -> dict:
-        """Wait for the call to connect; ringing tone alone is not connection."""
+        """Wait for the call to connect; a ringing tone alone is not connection."""
         deadline = time.monotonic() + timeout
         in_call_since = None
-        state = {}
+        state: dict = {}
         while time.monotonic() < deadline:
             state = self.state()
             if not state["in_call"]:
@@ -402,7 +541,15 @@ class PhoneApp:
         state = self.state()
         if not state["in_call"]:
             return {"hung_up": False, "was_in_call": False, **state}
-        clicked = self.click(state["end_button"])
+        clicked = False
+        for candidate in ([state["end_button"]] if state["end_button"] else []) + [
+            "End Call",
+            "End",
+            "Hang Up",
+        ]:
+            if candidate and self.click(candidate):
+                clicked = True
+                break
         time.sleep(0.8)
         after = self.state()
         return {"hung_up": clicked and not after["in_call"], "was_in_call": True, **after}
@@ -413,7 +560,7 @@ class PhoneApp:
         state = self.state()
         if not state["in_call"]:
             raise PhoneControlError("No active call for keypad input.")
-        if state["keypad_button"]:
+        if state["keypad_button"] and not state["keypad_open"]:
             self.click(state["keypad_button"])
             time.sleep(0.4)
         pressed = ""
@@ -421,17 +568,24 @@ class PhoneApp:
             if not self.click(digit):
                 break
             pressed += digit
-            time.sleep(0.25)
+            time.sleep(0.2)
         return {"requested": digits, "pressed": pressed, "complete": pressed == digits}
 
 
 def phone_ui_dump(path: Path | None = None) -> dict:
     """Diagnostic for the exact labels this Phone version exposes."""
     app = PhoneApp()
-    app.open()
-    time.sleep(1.5)
-    elements = app.snapshot()
-    report = {"accessibility": True, "elements": elements, "state": app.interpret(elements)}
+    app.ensure_window()
+    nodes = app.snapshot()
+    report = {
+        "accessibility": accessibility_enabled(),
+        "elements": [node.as_dict() for node in nodes],
+        "audio_menu": [
+            {"section": i.section, "title": i.title, "enabled": i.enabled, "selected": bool(i.mark)}
+            for i in app.backend.menu("Audio")
+        ],
+        "state": app.interpret(nodes, app.mute_enabled()),
+    }
     if path:
         path.write_text(json.dumps(report, indent=2))
     return report

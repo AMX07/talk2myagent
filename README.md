@@ -21,7 +21,7 @@ host agent (Codex / OpenCode / Claude Code / you)
   └─ writes an exact CallPlan → phone_call_start(plan, authorized=true)
        local service
          ├─ routes Phone audio through BlackHole 16ch (in) and 2ch (out)
-         ├─ opens tel:+1… in the Phone app, confirms the dial sheet, waits for connect
+         ├─ types the number into Phone's keypad, presses Call, waits for connect
          ├─ Whisper hears → Qwen decides → Kokoro speaks, sentence by sentence
          ├─ presses keypad digits for menus, asks recording consent, retains audio after it
          ├─ hangs up, restores your audio devices
@@ -49,7 +49,7 @@ pre-synthesized and play with no generation at all.
 
 ## What is verified
 
-- 62 automated tests: phone control (dial sheet, hangup, keypad, audio
+- 69 automated tests: phone control (keypad dialing, hangup, digits, audio
   routing) against scripted accessibility dumps; the end-to-end runner with a
   fake Phone app; streaming, fact guard, consent, loop breaker, role-play.
 - Real-model rehearsals (`t2ma demo`): simulated Amazon return, both sides
@@ -60,8 +60,10 @@ pre-synthesized and play with no generation at all.
 **Not yet verified on this Mac:** a real dialed call. It needs one manual
 step, the Accessibility permission for the host app (see
 [docs/SETUP.md](docs/SETUP.md)). The dial, confirm, connect, and hangup logic
-matches the Phone app's accessibility labels by pattern and `t2ma phone-ui`
-dumps what your Phone version exposes if a control is not found.
+is verified against the live Phone app up to the Call button: the keypad opens,
+the number types in and reads back, and the popover's Call button is located.
+Only the final press is untested. `t2ma phone-ui` dumps what your Phone version
+exposes if a control is ever not found.
 
 ## Safety boundaries
 
