@@ -115,5 +115,5 @@ silence is not reliable evidence of hangup. The terminal rehearsal remains usabl
 without Codex credits, but free-form reasoning requires an active Codex task.
 
 The service log is `.runtime/service.log`. To stop it gracefully, find its PID
-with `lsof .runtime/service.sock` and use `kill -TERM <PID>`. Do not kill unrelated
+with `lsof -U | rg 'talk2myagent/.runtime/service.sock'` and use `kill -TERM <PID>`. Do not kill unrelated
 Python processes. Never commit private transcripts or order details.
