@@ -13,6 +13,8 @@ from .config import ROOT, private_dir, settings
 def download_models():
     from huggingface_hub import snapshot_download
 
+    from .vad import download_vad
+
     folder = private_dir(ROOT / "models")
     for name in ["kokoro-v1.0.onnx", "voices-v1.0.bin"]:
         path = folder / name
@@ -25,6 +27,7 @@ def download_models():
             )
             part.replace(path)
     print(snapshot_download(settings().stt_model), flush=True)
+    print(download_vad(), flush=True)
     print("Speech models ready. Inference runs locally.")
 
 

@@ -70,37 +70,49 @@ def human_devices(input_name: str | None = None, output_name: str | None = None)
 
 
 class Segmenter:
-    """RMS VAD for the MVP. Silence is not sent to Whisper."""
+    """Turn endpointing; activity comes from neural VAD or explicit RMS fallback."""
 
     def __init__(self, rate: int, threshold: float, silence: float):
         self.rate, self.threshold, self.silence = rate, threshold, silence
-        self.preroll: deque[np.ndarray] = deque(maxlen=5)
+        self.preroll: deque[np.ndarray] = deque(maxlen=10)
         self.parts: list[np.ndarray] = []
         self.quiet = self.voiced = 0.0
+        self.last_segment: dict = {}
+        self.samples = 0
 
-    def feed(self, block: np.ndarray) -> np.ndarray | None:
+    def feed(self, block: np.ndarray, active: bool | None = None) -> np.ndarray | None:
         duration = len(block) / self.rate
-        active = float(np.sqrt(np.mean(block * block))) >= self.threshold
+        if active is None:
+            active = float(np.sqrt(np.mean(block * block))) >= self.threshold
         if not self.parts:
             if active:
                 self.parts = list(self.preroll)
+                self.samples = sum(map(len, self.parts))
                 self.preroll.clear()
             else:
                 self.preroll.append(block)
                 return None
         self.parts.append(block)
+        self.samples += len(block)
         self.voiced += duration if active else 0
         self.quiet = 0 if active else self.quiet + duration
-        if self.quiet >= self.silence or sum(map(len, self.parts)) >= self.rate * 20:
+        if self.quiet >= self.silence or self.samples >= self.rate * 20:
+            self.last_segment = {
+                "trailing_silence_seconds": self.quiet,
+                "endpoint_reason": "silence" if self.quiet >= self.silence else "max_duration",
+            }
             audio = np.concatenate(self.parts) if self.voiced >= 0.15 else None
             self.parts = []
+            self.samples = 0
             self.quiet = self.voiced = 0.0
             return audio
         return None
 
     def flush(self) -> np.ndarray | None:
+        self.last_segment = {"trailing_silence_seconds": self.quiet, "endpoint_reason": "flush"}
         audio = np.concatenate(self.parts) if self.parts and self.voiced >= 0.15 else None
         self.parts = []
+        self.samples = 0
         self.voiced = self.quiet = 0.0
         return audio
 
@@ -131,8 +143,14 @@ class AudioBridge:
         self.play_started = 0.0
         self.last_input_rms = 0.0
         self.last_input_at = 0.0
+        self.detector = None
+        self.last_voice_at = 0.0
 
     def start(self):
+        if self.config.vad_backend == "silero":
+            from .vad import SileroDetector
+
+            self.detector = SileroDetector(self.config.sample_rate, self.config.vad_probability)
         if self.config.input_device == self.config.output_device and not self.allow_shared_device:
             raise ValueError("Input and output must be different audio buses to prevent feedback.")
         incoming = device_index(self.config.input_device, "inputs")
@@ -172,6 +190,7 @@ class AudioBridge:
             self.config.sample_rate, self.config.speech_threshold, self.config.silence_seconds
         )
         overlap = 0.0
+        was_suppressed = False
         try:
             while not self.stop.is_set() or not self.blocks.empty():
                 try:
@@ -189,28 +208,42 @@ class AudioBridge:
                         self.writer.write(block)
                         self.writer.flush()
                 if suppressed:
-                    vad = Segmenter(
-                        self.config.sample_rate,
-                        self.config.speech_threshold,
-                        self.config.silence_seconds,
-                    )
+                    if not was_suppressed:
+                        vad = Segmenter(
+                            self.config.sample_rate,
+                            self.config.speech_threshold,
+                            self.config.silence_seconds,
+                        )
+                        if self.detector:
+                            self.detector.reset()
+                    was_suppressed = True
                     continue
-                if (
-                    self.playing.is_set()
-                    and float(np.sqrt(np.mean(block * block))) >= self.config.speech_threshold
-                ):
+                was_suppressed = False
+                active = (
+                    self.detector.feed(block)
+                    if self.detector
+                    else self.last_input_rms >= self.config.speech_threshold
+                )
+                if active:
+                    self.last_voice_at = at + len(block) / self.config.sample_rate
+                if self.playing.is_set() and active:
                     overlap += len(block) / self.config.sample_rate
                     if overlap >= 0.3:
                         self.playback_stop.set()
                 else:
                     overlap = 0.0
-                segment = vad.feed(block)
+                segment = vad.feed(block, active=active)
                 if segment is not None:
+                    end = at + len(block) / self.config.sample_rate
                     self.on_segment(
                         segment,
-                        at
-                        + len(block) / self.config.sample_rate
-                        - len(segment) / self.config.sample_rate,
+                        end - len(segment) / self.config.sample_rate,
+                        {
+                            **vad.last_segment,
+                            "segment_seconds": len(segment) / self.config.sample_rate,
+                            "speech_end_at": end - vad.last_segment["trailing_silence_seconds"],
+                            "vad_backend": self.config.vad_backend,
+                        },
                     )
             segment = vad.flush()
             if segment is not None:

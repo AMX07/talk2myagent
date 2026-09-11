@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +18,12 @@ class Settings(BaseModel):
     voice: str = "af_heart"
     silence_seconds: float = Field(default=0.7, ge=0.2, le=3)
     speech_threshold: float = Field(default=0.008, gt=0, lt=1)
+    vad_backend: Literal["silero", "rms"] = "silero"
+    vad_probability: float = Field(default=0.5, gt=0, lt=1)
+    conversation_model: str = "Qwen/Qwen3-4B-MLX-4bit"
+    conversation_max_tokens: int = Field(default=180, ge=32, le=512)
+    conversation_timeout_seconds: float = Field(default=20, ge=2, le=60)
+    conversation_silence_seconds: float = Field(default=30, ge=5, le=120)
     max_call_seconds: int = Field(default=900, ge=30, le=3600)
     idle_seconds: int = Field(default=120, ge=30, le=600)
 

@@ -80,6 +80,7 @@ class Session:
                 "at": round(self.elapsed() if at is None else max(at, 0), 3),
                 "speaker": speaker,
                 "text": text,
+                "emitted_at": round(self.elapsed(), 3),
                 **extra,
             }
             self.events.append(event)
@@ -309,7 +310,7 @@ class Engine:
 
     def _start_bridge(self, call, config, **options):
         bridge = AudioBridge(
-            config, lambda a, at: self._enqueue(call, a, at), call.error, **options
+            config, lambda a, at, meta=None: self._enqueue(call, a, at, meta), call.error, **options
         )
         try:
             bridge.start()
@@ -395,9 +396,9 @@ class Engine:
             raise ValueError(f"Call is {call.state}, not active.")
         return call
 
-    def _enqueue(self, call: Session, audio: np.ndarray, at: float):
+    def _enqueue(self, call: Session, audio: np.ndarray, at: float, meta: dict | None = None):
         try:
-            call.segments.put_nowait((audio, at))
+            call.segments.put_nowait((audio, at, time.monotonic(), meta or {}))
         except queue.Full:
             call.error(
                 "Transcription backlog full; some speech was not transcribed. Raw recording may still contain it."
@@ -409,15 +410,24 @@ class Engine:
             try:
                 if item is None:
                     return
-                audio, at = item
+                audio, at, queued_at, meta = item
+                transcribe_started = time.monotonic()
                 result = self.speech.transcribe(audio, self.config.sample_rate)
                 if result["text"]:
+                    timing = {
+                        **meta,
+                        "segment_ready_at": round(queued_at - call.started, 3),
+                        "transcription_queue_seconds": round(transcribe_started - queued_at, 3),
+                    }
+                    if "speech_end_at" in timing:
+                        timing["speech_end_at"] = round(timing["speech_end_at"] - call.started, 3)
                     call.event(
                         "remote",
                         result["text"],
                         at=at - call.started,
                         inference_seconds=result["inference_seconds"],
                         source="whisper",
+                        **timing,
                     )
                     if call.mode == "roleplay" and re.fullmatch(
                         r"(?:please\s+)?(?:stop|end|exit) (?:the )?test[.!?]*",
@@ -476,7 +486,9 @@ class Engine:
             raise ValueError("Speak one short turn of 1–600 characters.")
         with self.lock:
             call = self._active(call_id)
+            synthesis_started = time.monotonic()
             audio, rate = self.speech.synthesize(text)
+            synthesis_seconds = time.monotonic() - synthesis_started
             if call.cancel_requested.is_set():
                 raise RuntimeError("Role-play stopped; generated speech was not played.")
             at = call.elapsed()
@@ -497,6 +509,7 @@ class Engine:
                 audio_file=path.name,
                 played_seconds=round(played, 3),
                 interrupted=played < duration - 0.05,
+                synthesis_seconds=round(synthesis_seconds, 3),
             )
             return {"event": event, "duration_seconds": duration, "mode": call.mode}
 
