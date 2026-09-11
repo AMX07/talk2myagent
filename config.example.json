@@ -7,5 +7,11 @@
   "silence_seconds": 0.7,
   "speech_threshold": 0.008,
   "max_call_seconds": 900,
-  "idle_seconds": 120
+  "idle_seconds": 120,
+  "vad_backend": "silero",
+  "vad_probability": 0.5,
+  "conversation_model": "Qwen/Qwen3-8B-MLX-4bit",
+  "conversation_max_tokens": 180,
+  "conversation_timeout_seconds": 20,
+  "conversation_silence_seconds": 30
 }

@@ -25,7 +25,7 @@ def utc() -> str:
 
 
 class Session:
-    def __init__(self, folder: Path, plan: CallPlan, mode: str):
+    def __init__(self, folder: Path, plan: CallPlan, mode: str, *, persist: bool = True):
         self.folder, self.plan, self.mode = folder, plan, mode
         self.id = folder.name
         self.state = "prepared"
@@ -53,7 +53,8 @@ class Session:
         self.conversation: dict = {"controller": "codex", "phase": "manual"}
         self.conversation_worker: threading.Thread | None = None
         self.review_required = False
-        self.save()
+        if persist:
+            self.save()
 
     def elapsed(self) -> float:
         return self.demo_clock if self.mode == "demo" else time.monotonic() - self.started
@@ -438,9 +439,33 @@ class Engine:
 
     def get(self, call_id: str) -> Session:
         if call_id not in self.sessions:
-            raise ValueError(
-                "Unknown/inactive call. Use result to recover saved artifacts after a service restart."
+            if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{8}", call_id):
+                raise ValueError("Invalid call_id.")
+            folder = self.root / call_id
+            if not (folder / "result.json").exists() or not (folder / "session.json").exists():
+                raise ValueError(
+                    "Unknown/inactive call. Use result to recover saved artifacts after a service restart."
+                )
+            saved = json.loads((folder / "session.json").read_text())
+            result = json.loads((folder / "result.json").read_text())
+            # Restore only a completed audio session for review; never reopen hardware.
+            call = Session(
+                folder, CallPlan.model_validate(saved["plan"]), saved["mode"], persist=False
             )
+            call.state = result["outcome"]
+            call.result = result
+            call.events = result["transcript"]
+            call.created_at = saved["created_at"]
+            call.started = time.monotonic() - max(
+                (e.get("emitted_at", e["at"]) for e in call.events), default=0
+            )
+            call.scenario = saved.get("scenario")
+            call.audio_config = result.get("audio")
+            call.conversation = result.get("conversation", call.conversation)
+            call.review_required = result.get("review_required", False)
+            call.evaluation = result.get("evaluation", [])
+            call.cancel_requested.set()
+            self.sessions[call_id] = call
         call = self.sessions[call_id]
         call.last_touch = time.monotonic()
         return call

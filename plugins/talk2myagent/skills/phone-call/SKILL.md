@@ -5,9 +5,10 @@ description: Conduct phone calls or spoken developer role-play tests with local 
 
 # Phone calls from this Mac
 
-You are the conversation's single decision-maker. The local tools provide speech
-recognition, synthesis, recording, and saved state; they do not contain another
-reasoning agent. They cannot access ChatGPT's built-in voice session.
+You prepare the task and review the outcome. A local conversation model handles
+spoken turns using your saved plan; local Whisper and Kokoro handle speech.
+The models run on this Mac without an inference API. This is separate from
+ChatGPT's built-in Voice session.
 
 ## Human role-play test mode
 
@@ -28,24 +29,35 @@ When they provide the task:
 2. Briefly show the plan and say they are now playing the recipient. A task
    submitted in test mode is authorization to start the requested local voice
    test. Do not add another approval step unless they asked to review/wait first.
-   Call `phone_test_start` with the returned IDs. It starts mic capture, enables
+   Call `phone_test_start` with the returned IDs and `controller: local`. It starts mic capture, enables
    recording by default, and **speaks the greeting itself**; do not repeat it.
-3. Continue this same turn with `phone_listen` / `phone_say`. Do not stop after
-   the greeting or ask the developer to type every reply. Listen to the physical
-   microphone and respond through local speech. Answer the recipient's questions
-   using the saved facts, clarify new information, and pursue the objective.
-   Never fabricate recipient speech with `phone_simulate_remote` in this mode.
-4. Read the returned cursor and pass it to the next listen. Stay in character
-   during the spoken conversation. The developer's speech is the recipient's
-   dialogue; typed messages are test controls or task corrections. Only execute
-   simulated business actions. Do not use Phone, browse an account, send messages,
-   or invoke tools with real external effects as part of a role-play.
-5. If the recipient confirms the objective, speak a short closing. Evaluate each
-   success criterion with `phone_test_finish`, citing the recipient event `seq`
-   IDs. `completed` requires all criteria met; blocked/uncertain outcomes remain
-   `needs_user` or `failed`. Then return to the task-owner role and summarize
-   what was achieved, evidence, and remaining actions, with transcript/recording
-   links. Explicitly label the outcome as a role-play result.
+3. The local worker now owns the conversation. Use `phone_conversation_wait`
+   (up to 25 seconds per wait) until it ends. Keep this Codex turn open for the
+   final review, but do not select/speak each reply or compete with the worker.
+   Do not call `phone_conversation_start` again: test_start already delegated.
+   The worker runs independently between tools and maintains its own heartbeat.
+4. Developer speech is recipient dialogue; typed messages are test controls or
+   corrections. For a material correction, stop the test and prepare a revised
+   plan. Do not silently change facts mid-call. Never inject synthetic recipient
+   speech, dial, browse an account, or perform real business actions in role-play.
+5. When `review_required` is true, microphone capture has stopped. Read the full
+   result/transcript. The worker's `proposal: resolved` is not proof of success.
+   Evaluate every criterion with `phone_test_finish`, citing actual recipient
+   event IDs. Only use completed when all criteria are supported. Missing terms,
+   mistaken identifiers, or partial fulfillment require needs_user/failed.
+   Return the outcome, next steps, transcript and recording to the task owner;
+   explicitly label the result as role-play.
+
+If tools in this existing task have an older schema, use the same private service
+through `uv run t2ma request OP --json @/absolute/private-arguments.json` from the
+source repository. Operations are `test_prepare`, `test_start`,
+`conversation_wait`, and `test_finish`. Keep private arguments in `.runtime/`.
+Use `controller: local` explicitly with the CLI. Never fall back to the slow
+Codex say/listen loop without explaining it. A new task discovers the updated
+plugin automatically; an existing task can use the CLI immediately.
+
+The optional `controller: codex` mode preserves manual say/listen debugging.
+It is slower and should not be chosen for natural live conversation testing.
 
 Use **speakers** mode by default. It suppresses mic input during playback and
 for 450 ms afterward to avoid acoustic feedback; tell the developer to reply
@@ -57,9 +69,9 @@ For immediate exit, use `phone_test_stop`. A recognized standalone **stop test**
 **end test**, or **exit test** also stops the local session without waiting for
 Codex to respond. In speaker mode the spoken command is heard only during a
 listening window; `uv run t2ma test-stop` remains available during playback.
-If a listen returns a terminal state, read `phone_result` and report the partial
-outcome. If three 25-second waits yield no recipient speech, check whether they
-are still there once; after another silent wait, stop and report `needs_user`.
+If the session stops, read `phone_result` and report its partial outcome. The
+local worker checks once after 30 seconds without a reply and stops after a
+second silent interval. Silence never establishes success.
 
 The developer provides a new task for each test. Existing scripted `demo` mode
 is a separate regression rehearsal. Read `docs/TESTING.md` in the source repo for
@@ -94,9 +106,11 @@ blindly retry dialing when the state is unclear.
    assistant acting for the user. Obtain recording consent before enabling saved
    audio with `phone_recording_start`. Before that, recognition uses transient
    audio; its text and generated agent speech still enter the session artifacts.
-3. Alternate `phone_listen` and brief `phone_say` turns. Always carry forward the
-   returned cursor. Silence or a timeout means wait/inspect, never success,
-   hangup, or consent. The recorder captures while you reason.
+3. Once the representative is ready and recording consent has been obtained,
+   delegate with `phone_conversation_start` using the exact plan ID. The local
+   model handles conversational turns; use `phone_conversation_wait`. It has no
+   computer-use or external account tools. Silence is never proof of success.
+   For an IVR requiring keypad actions, handle that stage before delegation.
 4. For an IVR, use its actual instructions. `phone_keypad` returns a request;
    press those keys on the connected Phone call using computer use. Verify the
    IVR response. Avoid memorized menus or guessed key sequences.
@@ -116,7 +130,9 @@ and the call before speaking again. Keep utterances short for useful latency.
 
 Ask for explicit outcome, case number, refund details, deadlines, and remaining
 actions. End the Phone call using computer use and verify it is disconnected.
-Call `phone_finish` with evidence-based status and summary. The tool returns the
+After delegated conversation, use `phone_conversation_review` with checks for
+every success criterion and `phone_disconnected: true` only after observing it.
+For manual conversations, use `phone_finish` with evidence-based status and summary. The tool returns the
 complete available transcript and recording/report paths to this same task.
 `completed` means the representative confirmed the authorized result, not simply
 that the requested words were spoken. If `needs_phone_hangup` is true, end the

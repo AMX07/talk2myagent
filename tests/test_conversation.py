@@ -129,6 +129,27 @@ def test_local_error_closes_audio_without_claiming_success(engine, scenario):
     assert call.result["outcome"] != "completed"
 
 
+def test_pending_review_survives_service_restart_without_reopening_audio(engine, scenario):
+    call = autonomous(engine, scenario, Brain([("Thank you, goodbye.", "resolved")]))
+    confirmation = call.event("remote", "The bike is repaired and available at four.")
+    until(lambda: call.result is not None)
+    call.conversation_worker.join(2)
+    engine.sessions.clear()
+    checks = [
+        {
+            "criterion_index": i,
+            "verdict": "met",
+            "evidence_seq": [confirmation["seq"]],
+            "explanation": "Confirmed",
+        }
+        for i in range(2)
+    ]
+    result = engine.test_finish(call.id, "completed", "Bike ready.", checks)
+    assert result["outcome"] == "completed"
+    assert engine.get(call.id).bridge is None
+    assert result["recording_path"] == call.result["recording_path"]
+
+
 def test_plan_handoff_distinguishes_recipient_and_caller(scenario):
     messages = messages_for(
         scenario.call_plan(),

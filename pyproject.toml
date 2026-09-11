@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "talk2myagent"
 version = "0.1.0"
-description = "Local phone audio tools for a single Codex agent on macOS"
+description = "Local phone conversations with Codex planning and a local dialogue model on macOS"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "mcp>=1.12,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1",
