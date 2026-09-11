@@ -281,6 +281,28 @@ class _GuardStop(Exception):
     pass
 
 
+def _tidy(draft: dict, schema: dict) -> dict:
+    """Forgive a small model's formatting: lists for strings, strings for lists."""
+    if not isinstance(draft, dict):
+        raise TypeError("The plan must be a JSON object.")
+    out: dict = {}
+    for key, shape in schema.items():
+        value = draft.get(key)
+        if isinstance(shape, str):
+            out[key] = " ".join(map(str, value)) if isinstance(value, list) else str(value or "")
+        elif isinstance(shape, dict):
+            entries = value if isinstance(value, dict) else {}
+            out[key] = {
+                str(name): (" ".join(map(str, line)) if isinstance(line, list) else str(line))
+                for name, line in entries.items()
+                if str(line).strip()
+            }
+        else:
+            items = value if isinstance(value, list) else ([value] if value else [])
+            out[key] = [str(item).strip() for item in items if str(item).strip()]
+    return out
+
+
 class LocalConversation:
     def __init__(self, config: Settings, inference_lock: threading.Lock):
         self.config, self.lock = config, inference_lock
@@ -357,7 +379,11 @@ class LocalConversation:
             }
 
     def _generate(
-        self, messages: list[dict], cancel: threading.Event, on_text=None
+        self,
+        messages: list[dict],
+        cancel: threading.Event,
+        on_text=None,
+        max_tokens: int | None = None,
     ) -> tuple[str, dict]:
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
@@ -380,7 +406,7 @@ class LocalConversation:
                 self.model,
                 self.tokenizer,
                 tokens,
-                max_tokens=self.config.conversation_max_tokens,
+                max_tokens=max_tokens or self.config.conversation_max_tokens,
                 sampler=make_sampler(temp=0.3, top_p=0.8),
                 prompt_cache=prompt_cache,
             )
@@ -511,12 +537,17 @@ class LocalConversation:
     ) -> CallPlan:
         """Draft a CallPlan locally; the user reviews it before any call."""
         schema = {
-            "objective": "one sentence goal, measurable",
-            "opening": "first spoken sentence: AI assistant calling on behalf of NAME, purpose, and a request to record and transcribe the call",
-            "dialogue": {"situation_key": "what to say in that situation (3-8 entries)"},
-            "allowed_actions": ["actions the caller may agree to"],
-            "stop_conditions": ["situations that require the customer's involvement"],
-            "success_criteria": ["explicit confirmations required from the other side (2-4)"],
+            "objective": "one sentence, measurable",
+            "opening": "the first spoken sentence: an AI assistant calling on behalf of NAME, the purpose, and a request to record and transcribe the call",
+            "dialogue": {
+                "person_answers": "what to say once a person picks up",
+                "asked_for_details": "what to say when they ask for the order or account",
+                "offered_less": "what to say if they offer less than the goal",
+                "closing": "what to say to end the call",
+            },
+            "allowed_actions": ["two or three actions the caller may agree to"],
+            "stop_conditions": ["two or three situations that need the customer"],
+            "success_criteria": ["two or three confirmations the other side must give"],
         }
         messages = [
             {
@@ -524,7 +555,9 @@ class LocalConversation:
                 "content": (
                     "You write concise telephone call plans for an AI caller. Use only the facts "
                     "given; never invent identifiers or amounts. Output ONLY a JSON object with "
-                    "exactly these keys: " + json.dumps(schema)
+                    "exactly these keys. Every dialogue value is a single string, and every list "
+                    "holds short plain strings. Use your own situation names as dialogue keys. "
+                    "Template: " + json.dumps(schema)
                 ),
             },
             {
@@ -549,12 +582,13 @@ class LocalConversation:
                     else []
                 ),
                 cancel or threading.Event(),
+                max_tokens=1400,
             )
             text = output.strip()
             if text.startswith("```"):
                 text = text.strip("`").removeprefix("json").strip()
             try:
-                draft = json.loads(text)
+                draft = _tidy(json.loads(text), schema)
                 return CallPlan(
                     company=company,
                     phone_number=phone_number,
@@ -566,6 +600,8 @@ class LocalConversation:
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 errors = str(exc)[:500]
+                if "Unterminated" in errors or "Expecting" in errors:
+                    errors += " Your JSON was cut off. Keep every list to three short entries."
         raise RuntimeError(f"Could not draft a valid plan: {errors}")
 
     def persona_reply(self, brief: str, events: list[dict], cancel: threading.Event) -> str:
