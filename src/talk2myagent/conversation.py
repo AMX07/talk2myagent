@@ -66,8 +66,9 @@ Rules:
 - If you have not spoken yet, your first reply must deliver the OPENING below, adapted to
   what you just heard (a human greeting gets the full opening; a menu gets a short answer).
 
-Style: one or two short spoken sentences, under 45 words, natural and polite. Ask at most
-one or two related questions per turn. No reasoning, JSON, stage directions, or labels
+Style: begin with a very short acknowledgment sentence of at most five words (for example
+"Sure." or "Thanks, I have that."), then one or two short sentences, under 45 words in
+total, natural and polite. Ask at most one or two related questions per turn. No reasoning, JSON, stage directions, or labels
 inside "say". Do not ask "Is there anything else I can help you with?": you are the one
 requesting help. Do not repeat the opening once delivered.
 
@@ -129,7 +130,7 @@ class SayStream:
 
     SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=\S)")
 
-    def __init__(self, min_chars: int = 12):
+    def __init__(self, min_chars: int = 4):
         self.min_chars = min_chars
         self.start: int | None = None
         self.closed = False
@@ -187,6 +188,51 @@ class SayStream:
                 out.append(rest)
             self.emitted = len(self.decoded)
         return out
+
+
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+DIGIT_RUN = re.compile(r"\d[\d,\-\s.]{1,}\d")
+DATE = re.compile(
+    r"(?i)\b(?:january|february|march|april|may|june|july|august|september|october|november|"
+    r"december)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*\d{4})?|\b\d{1,2}/\d{1,2}/\d{2,4}\b"
+)
+CLOSING_QUESTION = re.compile(r"(?i)anything else (?:i|we) can (?:help|assist|do)")
+GREETING_PATTERN = re.compile(
+    r"(?i)(how (?:can|may) i help|thank you for calling|thanks for calling|this is \w+|"
+    r"\bspeaking\b|how are you|good (?:morning|afternoon|evening)|^hello|^hi\b)"
+)
+FALLBACK = "I'm sorry, I don't have that detail on hand. Is there another way we can proceed?"
+IVR_PATTERN = re.compile(
+    r"(?i)\b(press \d|press the|main menu|menu|options?\b|say or enter|enter (?:the|your)|"
+    r"para español|please hold|in a few words|tell me (?:what|why|how)|may be (?:recorded|monitored)|"
+    r"your call is important|to speak (?:to|with))"
+)
+
+
+def _normal(text: str) -> str:
+    return re.sub(r"[^a-z0-9@.]", "", text.lower())
+
+
+def unsupported_details(say: str, allowed_text: str) -> list[str]:
+    """Emails, digit strings, and dates in `say` that appear nowhere in the plan or transcript."""
+    allowed = _normal(allowed_text)
+    allowed_digits = re.sub(r"\D", "", allowed_text)
+    found = []
+    for match in EMAIL.finditer(say):
+        if _normal(match[0]) not in allowed:
+            found.append(match[0])
+    for match in DIGIT_RUN.finditer(say):
+        digits = re.sub(r"\D", "", match[0])
+        if len(digits) >= 3 and digits not in allowed_digits:
+            found.append(match[0])
+    for match in DATE.finditer(say):
+        if _normal(match[0]) not in allowed:
+            found.append(match[0])
+    return found
+
+
+class _GuardStop(Exception):
+    pass
 
 
 class LocalConversation:
@@ -247,6 +293,17 @@ class LocalConversation:
             for _ in generate_step(mx.array(tokens), self.model, max_tokens=0, prompt_cache=cache):
                 pass
             self._prefix = (key, tokens, cache)
+            from mlx_lm import stream_generate
+
+            # First generation after a cache build pays Metal warm-up; do it before the call.
+            for _ in stream_generate(
+                self.model,
+                self.tokenizer,
+                list(self.tokenizer.encode("Hi")),
+                max_tokens=2,
+                prompt_cache=copy.deepcopy(cache),
+            ):
+                pass
             return {
                 "prefix_cached": True,
                 "prefix_tokens": len(tokens),
@@ -312,24 +369,74 @@ class LocalConversation:
         stream = SayStream()
         first_sentence = None
         started = time.monotonic()
+        allowed = (
+            json.dumps(plan.model_dump())
+            + " "
+            + " ".join(e["text"] for e in events if e["speaker"] in {"remote", "agent"})
+        )
+        spoken: list[str] = []
+        blocked: list[str] = []
+
+        def emit(sentence: str):
+            nonlocal first_sentence
+            if CLOSING_QUESTION.search(sentence):
+                return
+            bad = unsupported_details(sentence, allowed)
+            if bad:
+                blocked.extend(bad)
+                sentence = FALLBACK
+            if first_sentence is None:
+                first_sentence = time.monotonic() - started
+            spoken.append(sentence)
+            if on_sentence:
+                on_sentence(sentence)
+            if bad:
+                raise _GuardStop()
 
         def on_text(text: str):
-            nonlocal first_sentence
             for sentence in stream.feed(text):
-                if first_sentence is None:
-                    first_sentence = time.monotonic() - started
-                if on_sentence:
-                    on_sentence(sentence)
+                emit(sentence)
 
-        output, metrics = self._generate(
-            messages_for(plan, events), cancel, on_text if on_sentence else None
-        )
-        text = output.strip()
-        if text.startswith("```"):
-            text = text.strip("`").removeprefix("json").strip()
-        reply = Reply.model_validate_json(text)
-        if on_sentence and not stream.closed:
-            on_text(output + '"')
+        guarded = False
+        try:
+            output, metrics = self._generate(
+                messages_for(plan, events), cancel, on_text if on_sentence else None
+            )
+        except _GuardStop:
+            guarded = True
+            output, metrics = "", {"generation_seconds": round(time.monotonic() - started, 3)}
+        if guarded:
+            reply = Reply(say=" ".join(spoken), status="continue")
+        else:
+            text = output.strip()
+            if text.startswith("```"):
+                text = text.strip("`").removeprefix("json").strip()
+            reply = Reply.model_validate_json(text)
+            if on_sentence:
+                if not stream.closed:
+                    try:
+                        on_text(output + '"')
+                    except _GuardStop:
+                        pass
+                if spoken:
+                    reply.say = " ".join(spoken)
+            else:
+                bad = unsupported_details(reply.say, allowed)
+                if bad:
+                    blocked.extend(bad)
+                    reply.say, reply.status = FALLBACK, "continue"
+                    reply.evidence_seq = []
+                reply.say = (
+                    " ".join(
+                        piece
+                        for piece in SayStream.SENTENCE_END.split(reply.say)
+                        if not CLOSING_QUESTION.search(piece)
+                    )
+                    or reply.say
+                )
+        if blocked:
+            metrics["blocked_details"] = blocked
+            reply.status = "continue"
         if "?" in reply.say:
             reply.status = "continue"
         recipient_ids = {e["seq"] for e in events if e["speaker"] == "remote"}
@@ -453,19 +560,35 @@ class ConversationWorker(threading.Thread):
         with self.call.condition:
             return any(e["speaker"] == "remote" and e["seq"] > seq for e in self.call.events)
 
-    def _wait_for_first_remote(self) -> None:
+    def _deliver_opening(self) -> int:
+        """Speak the pre-synthesized opening after a human greeting or a silent wait.
+
+        Returns the recipient cursor to resume from. A phone menu is left to the model.
+        """
         call = self.call
         deadline = time.monotonic() + self.opening_wait
+        first = None
         while call.state == "active" and not call.cancel_requested.is_set():
             with call.condition:
-                if any(e["speaker"] == "remote" for e in call.events):
-                    return
+                first = next((e for e in call.events if e["speaker"] == "remote"), None)
+                if first is not None:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 call.condition.wait(timeout=min(remaining, 0.2))
-        if call.state == "active" and not call.cancel_requested.is_set() and self._quiet():
-            self.engine.speak(call, [call.plan.opening])
+        if call.state != "active" or call.cancel_requested.is_set():
+            return 0
+        if first is not None and IVR_PATTERN.search(first["text"]):
+            return 0
+        while not self._quiet() and call.state == "active":
+            time.sleep(0.05)
+        if call.state != "active" or call.cancel_requested.is_set():
+            return 0
+        self.engine.speak(call, [call.plan.opening])
+        if first is None or not GREETING_PATTERN.search(first["text"]):
+            return 0  # substantive first words deserve an answer after the opening
+        return first["seq"]
 
     def run(self):
         call = self.call
@@ -474,7 +597,7 @@ class ConversationWorker(threading.Thread):
         silence_prompted = False
         try:
             if self.opening_wait is not None:
-                self._wait_for_first_remote()
+                cursor = self._deliver_opening()
             while call.state == "active" and not call.cancel_requested.is_set():
                 call.last_touch = time.monotonic()
                 with call.condition:

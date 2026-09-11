@@ -169,3 +169,53 @@ def test_plan_handoff_distinguishes_recipient_and_caller(scenario):
     assert messages[-3]["role"] == "assistant"
     assert scenario.objective in messages[0]["content"]
     assert "B-42" in messages[0]["content"]
+
+
+def test_fact_guard_blocks_invented_details_and_keeps_transcript_facts():
+    from talk2myagent.conversation import unsupported_details
+
+    allowed = '{"facts": {"order_id": "DEMO-1234", "email": "a@b.com"}} case R789,012 March 14 1969'
+    assert unsupported_details("The order is DEMO-1234 and the email is a@b.com.", allowed) == []
+    assert unsupported_details("Case R789,012 is done.", allowed) == []
+    assert unsupported_details("Born March 14, 1969.", allowed) == []
+    assert unsupported_details("The email is alex.demo@example.com.", allowed) == [
+        "alex.demo@example.com"
+    ]
+    assert unsupported_details("Card ending 4031.", allowed) == ["4031"]
+    assert "June 15, 1990" in unsupported_details("Born June 15, 1990.", allowed)
+    assert unsupported_details("Refund in 3-5 business days.", allowed) == []
+
+
+def test_streaming_reply_replaces_hallucinated_sentence_with_fallback(scenario):
+    import threading
+
+    from talk2myagent.config import Settings
+    from talk2myagent.conversation import FALLBACK, LocalConversation
+
+    brain = LocalConversation(Settings(), threading.Lock())
+    canned = (
+        '{"say": "Sure. The customer\'s email is alex.demo@example.com and the ticket is B-42. '
+        'Is there anything else I can help you with?", "status": "resolved", "evidence_seq": [2]}'
+    )
+
+    def fake_generate(messages, cancel, on_text=None):
+        for i in range(1, len(canned) + 1):
+            if on_text:
+                on_text(canned[:i])
+        return canned, {"generation_seconds": 0.1}
+
+    brain._generate = fake_generate
+    events = [
+        {"seq": 1, "speaker": "agent", "text": "Hello"},
+        {"seq": 2, "speaker": "remote", "text": "What is the email?"},
+    ]
+    spoken = []
+    reply, metrics = brain.respond(scenario.call_plan(), events, threading.Event(), spoken.append)
+    assert spoken == ["Sure.", FALLBACK]
+    assert reply.say == "Sure. " + FALLBACK and reply.status == "continue"
+    assert metrics["blocked_details"] == ["alex.demo@example.com"]
+    # Non-streaming path applies the same guard and drops the role-reversed closing question.
+    clean = '{"say": "Sure. The ticket is B-42. Is there anything else I can help you with?", "status": "continue", "evidence_seq": []}'
+    brain._generate = lambda messages, cancel, on_text=None: (clean, {"generation_seconds": 0.1})
+    reply, _ = brain.respond(scenario.call_plan(), events, threading.Event())
+    assert reply.say == "Sure. The ticket is B-42."

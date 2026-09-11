@@ -1,0 +1,43 @@
+{
+  "company": "Amazon US",
+  "phone_number": "+18882804331",
+  "phone_source": "Amazon customer service number from amazon.com/contact-us, confirmed by the user",
+  "objective": "Return the coffee grinder from order REPLACE-ORDER-ID because it arrived malfunctioning, and obtain a full refund to the original Visa payment method with return instructions and a confirmation number.",
+  "customer_name": "REPLACE Customer Name",
+  "facts": {
+    "order_id": "REPLACE-ORDER-ID",
+    "item": "coffee grinder",
+    "reason": "arrived malfunctioning",
+    "account_email": "REPLACE@example.com",
+    "refund_method": "full amount to the original Visa ending in REPLACE",
+    "unknown": "purchase amount and purchase date were not provided"
+  },
+  "opening": "Hello, this is an AI assistant calling on behalf of REPLACE Customer Name about a coffee grinder that arrived malfunctioning. May I record and transcribe this call so I can pass the details back to them?",
+  "dialogue": {
+    "after_recording_consent": "Thank you. The customer would like to return the coffee grinder from order REPLACE-ORDER-ID and receive a full refund to the original Visa.",
+    "account_lookup": "The account email is REPLACE@example.com and the order number is REPLACE-ORDER-ID.",
+    "missing_information": "I don't have that detail. Is the order number and account email enough to locate the order?",
+    "refund_terms": "The customer is asking for the full purchase amount refunded to the original Visa. Can you confirm the amount and the timing?",
+    "return_steps": "What are the return instructions and deadline? Is there a prepaid label or drop-off code, and a confirmation number?",
+    "alternative_offered": "The customer asked for a full refund to the original card, so I can't accept credit or a replacement. Could you explain why, or check with a supervisor?",
+    "close": "Thank you. I will pass the confirmation number and next steps to the customer."
+  },
+  "allowed_actions": [
+    "Request a return of this coffee grinder only",
+    "Share the customer's name, order number, and account email for lookup",
+    "Agree to a full refund to the original Visa",
+    "Request confirmation number, refund amount, timing, and return instructions"
+  ],
+  "stop_conditions": [
+    "The representative needs a one-time code, password, or the account holder on the line",
+    "Only a fee, partial refund, store credit, or replacement is available",
+    "Recording is declined: continue without retaining audio",
+    "The representative requires information that is not in the plan"
+  ],
+  "success_criteria": [
+    "Representative confirms a return or refund has been approved for the coffee grinder on this order",
+    "Representative confirms the refund amount and that it goes to the original Visa",
+    "Representative gives return instructions or confirms no physical return is needed, plus a confirmation number"
+  ],
+  "is_demo": false
+}

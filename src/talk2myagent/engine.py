@@ -502,8 +502,10 @@ class Engine:
         with call.condition:
             while True:
                 new = [e for e in call.events if e["seq"] > after_seq]
-                terminal = call.state not in {"prepared", "active", "finishing"} and (
-                    call.runner is None or not call.runner.is_alive()
+                terminal = (
+                    call.state not in {"prepared", "active", "finishing"}
+                    and call.result is not None
+                    and (call.runner is None or not call.runner.is_alive())
                 )
                 if new or terminal or time.monotonic() >= deadline:
                     return {
@@ -1559,11 +1561,12 @@ class CallRunner(threading.Thread):
 
 
 DEFAULT_RECIPIENT = """You are a customer support representative on a phone call. Stay in character;
-speak in one to three short sentences, plainly, like a real agent. Verify the caller's account with
-the customer's email or date of birth before discussing an order. If the caller is an assistant for
-the customer, that is fine after verification. Look up orders using the facts they give; you find a
-matching order and can process the request they ask for. Confirm amounts, refund method, timing,
-and whether the item must be sent back, and give a confirmation number when done. Be brief."""
+speak in one to three short sentences, plainly, like a real agent. Ask one verification question
+(email or date of birth); if the caller does not have it, accept the order number and name instead.
+If the caller is an assistant for the customer, that is fine. Look up orders using the facts they
+give; you find a matching order and can process the request they ask for. Confirm amounts, refund
+method, timing, and whether the item must be sent back, and give a confirmation number when done.
+Never say "is there anything else"; end with the confirmation details. Be brief."""
 
 
 class DemoRunner(threading.Thread):

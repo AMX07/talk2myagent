@@ -93,7 +93,13 @@ def amazon_plan(
         phone_source=phone_source,
         objective=f"{action.title()} {item}; obtain the confirmation and next steps.",
         customer_name=customer_name,
-        facts={"order_id": order_id, "item": item, "reason": reason, "action": action},
+        facts={
+            "order_id": order_id,
+            "item": item,
+            "reason": reason,
+            "action": action,
+            **({"account_email": "alex.demo@example.com"} if is_demo else {}),
+        },
         opening=(
             f"Hello, I'm an AI assistant calling on behalf of {customer_name}. "
             "May I record and transcribe this conversation to help them follow up?"

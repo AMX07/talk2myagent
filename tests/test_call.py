@@ -297,7 +297,10 @@ def test_demo_rehearsal_runs_without_dialing(tmp_path, monkeypatch):
             ),
             ("Thank you, goodbye.", "resolved", "unknown", ""),
         ],
-        persona=["I can help. The return is approved, case 4821, no fee."],
+        persona=[
+            "Sure, recording is fine. How can I help?",
+            "The return is approved, case 4821, no fee.",
+        ],
     )
     demo = amazon_plan(
         "return",
@@ -316,7 +319,9 @@ def test_demo_rehearsal_runs_without_dialing(tmp_path, monkeypatch):
         result = engine.call_status(call.id)["result"]
         assert result["simulated"] and phone.dialed == []
         remote = [e for e in result["transcript"] if e["speaker"] == "remote"]
-        assert len(remote) == 2 and "case 4821" in remote[-1]["text"]
+        agent = [e for e in result["transcript"] if e["speaker"] == "agent"]
+        assert len(remote) == 3 and "case 4821" in remote[-1]["text"]
+        assert agent[0]["text"] == demo.opening  # deterministic opening after the greeting
         assert result["recording_path"] and result["conversation"]["proposal"] == "resolved"
         assert result["latency"]["turns"] == 2
     finally:

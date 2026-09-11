@@ -48,8 +48,14 @@ def follow_call(call_id: str, quiet: bool = False) -> dict:
             if event.get("kind") == "latency":
                 if not quiet:
                     latency = event.get("speech_end_to_first_audio_seconds")
+                    processing = event.get("processing_seconds_to_first_audio")
+                    parts = []
                     if latency is not None:
-                        print(f"        ⏱ {latency:.2f}s from their last word to first reply audio")
+                        parts.append(f"{latency:.2f}s from their last word to first reply audio")
+                    if processing is not None:
+                        parts.append(f"{processing:.2f}s thinking+synthesis")
+                    if parts:
+                        print("        ⏱ " + "; ".join(parts))
                 continue
             if event["speaker"] == "system" and quiet:
                 continue
@@ -73,6 +79,11 @@ def print_result(result: dict) -> None:
         print(
             f"latency: median {latency['median_speech_end_to_first_audio_seconds']}s, "
             f"max {latency['max_speech_end_to_first_audio_seconds']}s over {latency['turns']} turns"
+        )
+    if latency.get("median_processing_seconds_to_first_audio") is not None:
+        print(
+            f"processing: median {latency['median_processing_seconds_to_first_audio']}s "
+            "from transcript to first reply audio"
         )
     if result.get("needs_phone_hangup"):
         print("!! The Phone call may still be connected. End it in the Phone app now.")
