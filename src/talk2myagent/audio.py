@@ -34,6 +34,41 @@ def device_index(name: str, direction: str) -> int:
     return matches[0]["index"]
 
 
+def human_devices(input_name: str | None = None, output_name: str | None = None) -> tuple[str, str]:
+    """Pick human-facing hardware, never an existing telephone loopback route."""
+    inventory = devices()
+
+    def choose(requested, direction, kind):
+        candidates = [
+            d
+            for d in inventory
+            if d[direction] > 0
+            and not any(
+                word in d["name"].lower()
+                for word in ("blackhole", "loopback", "aggregate", "multi-output")
+            )
+        ]
+        if requested:
+            matches = [d for d in candidates if d["name"] == requested]
+            if len(matches) != 1:
+                raise ValueError(f"Select a physical {kind} device from phone_test_status.")
+            return matches[0]["name"]
+        try:
+            default_name = sd.query_devices(kind=kind)["name"]
+        except sd.PortAudioError:
+            default_name = None
+        if any(d["name"] == default_name for d in candidates):
+            return default_name
+        builtin = next((d["name"] for d in candidates if "macbook" in d["name"].lower()), None)
+        if builtin:
+            return builtin
+        if len(candidates) == 1:
+            return candidates[0]["name"]
+        raise ValueError(f"Select a physical {kind} device from phone_test_status.")
+
+    return choose(input_name, "inputs", "input"), choose(output_name, "outputs", "output")
+
+
 class Segmenter:
     """RMS VAD for the MVP. Silence is not sent to Whisper."""
 
@@ -71,7 +106,15 @@ class Segmenter:
 
 
 class AudioBridge:
-    def __init__(self, config: Settings, on_segment, on_error):
+    def __init__(
+        self,
+        config: Settings,
+        on_segment,
+        on_error,
+        *,
+        speaker_safe: bool = False,
+        allow_shared_device: bool = False,
+    ):
         self.config, self.on_segment, self.on_error = config, on_segment, on_error
         self.blocks: queue.Queue = queue.Queue(maxsize=500)
         self.stop = threading.Event()
@@ -81,9 +124,16 @@ class AudioBridge:
         self.stream = None
         self.playback_stop = threading.Event()
         self.playing = threading.Event()
+        self.speaker_safe = speaker_safe
+        self.allow_shared_device = allow_shared_device
+        self.suppression_lock = threading.Lock()
+        self.suppression_windows: deque[tuple[float, float]] = deque(maxlen=100)
+        self.play_started = 0.0
+        self.last_input_rms = 0.0
+        self.last_input_at = 0.0
 
     def start(self):
-        if self.config.input_device == self.config.output_device:
+        if self.config.input_device == self.config.output_device and not self.allow_shared_device:
             raise ValueError("Input and output must be different audio buses to prevent feedback.")
         incoming = device_index(self.config.input_device, "inputs")
         device_index(self.config.output_device, "outputs")
@@ -109,6 +159,14 @@ class AudioBridge:
         except queue.Full:
             self.on_error("Audio capture overflow; recording/transcript may have a gap.")
 
+    def suppresses(self, at: float) -> bool:
+        if not self.speaker_safe:
+            return False
+        with self.suppression_lock:
+            return (self.playing.is_set() and at >= self.play_started) or any(
+                start <= at <= end for start, end in self.suppression_windows
+            )
+
     def _consume(self):
         vad = Segmenter(
             self.config.sample_rate, self.config.speech_threshold, self.config.silence_seconds
@@ -120,10 +178,23 @@ class AudioBridge:
                     block, at = self.blocks.get(timeout=0.1)
                 except queue.Empty:
                     continue
+                self.last_input_rms = float(np.sqrt(np.mean(block * block)))
+                self.last_input_at = time.monotonic()
+                suppressed = self.suppresses(at)
+                if suppressed:
+                    # Keep file timing continuous, but do not record/transcribe speaker echo.
+                    block = np.zeros_like(block)
                 with self.record_lock:
                     if self.writer:
                         self.writer.write(block)
                         self.writer.flush()
+                if suppressed:
+                    vad = Segmenter(
+                        self.config.sample_rate,
+                        self.config.speech_threshold,
+                        self.config.silence_seconds,
+                    )
+                    continue
                 if (
                     self.playing.is_set()
                     and float(np.sqrt(np.mean(block * block))) >= self.config.speech_threshold
@@ -164,7 +235,9 @@ class AudioBridge:
         samples = resample(audio, rate, self.config.sample_rate)
         self.playback_stop.clear()
         written = 0
-        self.playing.set()
+        with self.suppression_lock:
+            self.play_started = time.monotonic()
+            self.playing.set()
         try:
             with sd.OutputStream(
                 device=outgoing,
@@ -182,7 +255,9 @@ class AudioBridge:
                         self.on_error("Audio output underflow; remote party may have heard a gap.")
                     written += len(block)
         finally:
-            self.playing.clear()
+            with self.suppression_lock:
+                self.suppression_windows.append((self.play_started, time.monotonic() + 0.45))
+                self.playing.clear()
         return written / self.config.sample_rate
 
     def close(self):

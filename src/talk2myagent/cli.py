@@ -36,6 +36,13 @@ def main():
     sub.add_parser("mcp", help="Run the Codex MCP bridge over stdio")
     sub.add_parser("doctor", help="Inspect audio setup")
     sub.add_parser("models", help="Download open speech models")
+    sub.add_parser(
+        "test", help="Enter human role-play; inspect devices and wait for a task in Codex"
+    )
+    stop = sub.add_parser(
+        "test-stop", help="Stop the active human role-play and close its microphone"
+    )
+    stop.add_argument("call_id", nargs="?")
     demo = sub.add_parser("demo", help="Run a spoken, transcribed simulation; never places a call")
     demo.add_argument("--action", choices=["return", "cancel"], default="return")
     req = sub.add_parser("request", help="Invoke the persistent local tools without MCP")
@@ -59,6 +66,19 @@ def main():
             mcp_main()
         elif args.command == "models":
             download_models()
+        elif args.command == "test":
+            from .client import request
+
+            print(json.dumps(request("test_status"), indent=2))
+            print(
+                '\nTest mode ready. In Codex, say "Enter test mode", then describe the task.\n'
+                'The agent prepares a plan. Say "Start test" when ready to play the recipient.\n'
+                'Use "stop test" aloud or run: uv run t2ma test-stop'
+            )
+        elif args.command == "test-stop":
+            from .client import request
+
+            print(json.dumps(request("test_stop", call_id=args.call_id), indent=2))
         elif args.command == "doctor":
             from .engine import Engine
 

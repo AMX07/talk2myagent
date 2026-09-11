@@ -23,6 +23,11 @@ def create_app(engine: Engine) -> FastAPI:
         name: validate_call(getattr(engine, name))
         for name in (
             "doctor",
+            "test_status",
+            "test_prepare",
+            "test_start",
+            "test_finish",
+            "test_stop",
             "prepare",
             "dial_request",
             "connect",

@@ -36,6 +36,46 @@ class CallPlan(BaseModel):
         return hashlib.sha256(data.encode()).hexdigest()[:16]
 
 
+class TestScenario(BaseModel):
+    """A developer's task and expected outcome, without a dialable destination."""
+
+    model_config = ConfigDict(extra="forbid")
+    user_request: str = Field(min_length=1, max_length=4000)
+    recipient_role: str = Field(min_length=1, max_length=200)
+    customer_name: str = Field(min_length=1, max_length=100)
+    objective: str = Field(min_length=1, max_length=2000)
+    facts: dict[str, str] = Field(default_factory=dict)
+    greeting: str = Field(min_length=1, max_length=600)
+    dialogue: dict[str, str] = Field(min_length=1)
+    allowed_actions: list[str] = Field(min_length=1)
+    stop_conditions: list[str] = Field(min_length=1)
+    success_criteria: list[str] = Field(min_length=1)
+
+    def call_plan(self) -> CallPlan:
+        return CallPlan(
+            company=self.recipient_role[:100],
+            phone_number="+12025550123",
+            phone_source="Role-play sentinel; dialing is disabled by the engine.",
+            customer_name=self.customer_name,
+            objective=self.objective,
+            facts=self.facts,
+            opening=self.greeting,
+            dialogue=self.dialogue,
+            allowed_actions=self.allowed_actions,
+            stop_conditions=self.stop_conditions,
+            success_criteria=self.success_criteria,
+            is_demo=True,
+        )
+
+
+class CriterionCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    criterion_index: int = Field(ge=0)
+    verdict: Literal["met", "not_met", "unknown"]
+    evidence_seq: list[int] = Field(default_factory=list)
+    explanation: str = Field(min_length=1, max_length=1000)
+
+
 def amazon_plan(
     action: Literal["return", "cancel"],
     customer_name: str,

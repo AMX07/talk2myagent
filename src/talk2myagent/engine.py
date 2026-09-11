@@ -14,9 +14,9 @@ from typing import Literal
 import numpy as np
 import soundfile as sf
 
-from .audio import AudioBridge, devices, dtmf
+from .audio import AudioBridge, devices, dtmf, human_devices
 from .config import ROOT, Settings, private_dir, write_json
-from .plans import CallPlan
+from .plans import CallPlan, CriterionCheck, TestScenario
 from .speech import Speech, resample
 
 
@@ -46,6 +46,9 @@ class Session:
         self.remote_demo: list[tuple[float, np.ndarray, int]] = []
         self.demo_clock = 0.0
         self.result: dict | None = None
+        self.scenario: dict | None = None
+        self.evaluation: list[dict] = []
+        self.audio_config: dict | None = None
         self.save()
 
     def elapsed(self) -> float:
@@ -64,6 +67,8 @@ class Session:
                     "plan_id": self.plan.fingerprint(),
                     "recording": self.recording,
                     "recording_basis": self.recording_basis,
+                    "scenario": self.scenario,
+                    "audio_config": self.audio_config,
                 },
             )
 
@@ -114,10 +119,10 @@ class Engine:
             "next_step": "Verify Phone microphone = outgoing bus and Phone/system output = incoming bus. Run loopback-test before a call.",
         }
 
-    def prepare(self, plan: dict, mode: Literal["demo", "live"] = "demo") -> dict:
+    def prepare(self, plan: dict, mode: Literal["demo", "live", "roleplay"] = "demo") -> dict:
         plan_obj = CallPlan.model_validate(plan)
-        if mode not in ("demo", "live"):
-            raise ValueError("Mode must be demo or live.")
+        if mode not in ("demo", "live", "roleplay"):
+            raise ValueError("Mode must be demo, live, or roleplay.")
         if mode == "live" and plan_obj.is_demo:
             raise ValueError("A demo plan with fictional facts cannot be used for a real call.")
         with self.lock:
@@ -134,6 +139,176 @@ class Engine:
                 "state": call.state,
                 "folder": str(folder),
             }
+
+    def test_status(self) -> dict:
+        """Enter the voice playground without choosing a task or opening a mic."""
+        inventory = devices()
+        try:
+            incoming, outgoing = human_devices()
+            error = None
+        except ValueError as exc:
+            incoming, outgoing, error = None, None, str(exc)
+        return {
+            "mode": "roleplay",
+            "phase": "awaiting_task",
+            "microphone_opened": False,
+            "dialing_enabled": False,
+            "devices": inventory,
+            "suggested_input": incoming,
+            "suggested_output": outgoing,
+            "device_error": error,
+            "sessions": [
+                {"call_id": c.id, "state": c.state}
+                for c in self.sessions.values()
+                if c.mode == "roleplay"
+            ],
+            "next_step": "Developer supplies any call task in this Codex conversation. Prepare it with test_prepare; start after the developer is ready to act as the recipient.",
+        }
+
+    def test_prepare(self, scenario: dict) -> dict:
+        parsed = TestScenario.model_validate(scenario)
+        with self.lock:
+            prepared = self.prepare(parsed.call_plan().model_dump(), "roleplay")
+            call = self.get(prepared["call_id"])
+            call.scenario = parsed.model_dump()
+            call.event(
+                "system", "Human role-play ready. Developer's task saved; microphone is closed."
+            )
+            call.save()
+            return {
+                **prepared,
+                "phase": "ready",
+                "recipient_role": parsed.recipient_role,
+                "user_request": parsed.user_request,
+                "dialing_enabled": False,
+                "next_step": "When the developer is ready, use test_start. It opens the mic, starts the requested recording, and speaks the greeting automatically.",
+            }
+
+    def test_start(
+        self,
+        call_id: str,
+        plan_id: str,
+        record: bool = True,
+        audio_mode: Literal["speakers", "headphones"] = "speakers",
+        input_device: str | None = None,
+        output_device: str | None = None,
+    ) -> dict:
+        with self.lock:
+            call = self.get(call_id)
+            if call.mode != "roleplay" or call.scenario is None:
+                raise ValueError("Use test_prepare before test_start.")
+            if call.state != "prepared" or call.plan.fingerprint() != plan_id:
+                raise ValueError(
+                    "Test already started or plan_id does not match; do not repeat start."
+                )
+            if audio_mode not in {"speakers", "headphones"}:
+                raise ValueError("audio_mode must be speakers or headphones.")
+            self._check_audio_owner()
+            incoming, outgoing = human_devices(input_device, output_device)
+            # Warm inference before the microphone opens, so the greeting is ready promptly.
+            self.speech.synthesize("Ready.")
+            self.speech.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+            config = self.config.model_copy(
+                update={"input_device": incoming, "output_device": outgoing}
+            )
+            call.audio_config = {
+                "input_device": incoming,
+                "output_device": outgoing,
+                "audio_mode": audio_mode,
+                "sample_rate": config.sample_rate,
+            }
+            self._start_bridge(
+                call, config, speaker_safe=audio_mode == "speakers", allow_shared_device=True
+            )
+            call.state = "active"
+            call.connected_at = time.monotonic()
+            call.event(
+                "system",
+                f"Human role-play started on {incoming} / {outgoing}. You are now the recipient. Say 'stop test' or use test-stop to exit.",
+            )
+            call.save()
+            try:
+                if record:
+                    self.recording_start(
+                        call_id, "Developer explicitly started a recorded local role-play test."
+                    )
+                greeting = self.say(call_id, call.plan.opening)
+            except Exception:
+                self.finish(
+                    call_id, "failed", "Role-play failed while starting; microphone closed."
+                )
+                raise
+            return {
+                "call_id": call.id,
+                "mode": "roleplay",
+                "state": call.state,
+                "recording": call.recording,
+                "audio": call.audio_config,
+                "greeting": greeting,
+                "cursor": 0,
+                "next_step": "Listen to the developer as the recipient. Adapt each response to their actual speech until the objective is confirmed, blocked, or they stop the test.",
+            }
+
+    def test_finish(self, call_id: str, outcome: str, summary: str, checks: list[dict]) -> dict:
+        with self.lock:
+            call = self.get(call_id)
+            if call.mode != "roleplay":
+                raise ValueError("test_finish only accepts a role-play session.")
+            if call.result is not None:
+                return call.result
+            parsed = [CriterionCheck.model_validate(c) for c in checks]
+            expected = set(range(len(call.plan.success_criteria)))
+            if len(parsed) != len(expected) or {c.criterion_index for c in parsed} != expected:
+                raise ValueError("Evaluate each success criterion exactly once.")
+            remote = {e["seq"] for e in call.events if e["speaker"] == "remote"}
+            for check in parsed:
+                if not set(check.evidence_seq) <= remote:
+                    raise ValueError(
+                        "Evidence must cite actual recipient transcript event sequence IDs."
+                    )
+                if check.verdict == "met" and not check.evidence_seq:
+                    raise ValueError("A met criterion requires recipient evidence.")
+            if outcome == "completed" and any(c.verdict != "met" for c in parsed):
+                raise ValueError("Completion requires every success criterion to be met.")
+            call.evaluation = [
+                {**c.model_dump(), "criterion": call.plan.success_criteria[c.criterion_index]}
+                for c in sorted(parsed, key=lambda c: c.criterion_index)
+            ]
+            return self.finish(call_id, outcome, summary)
+
+    def test_stop(self, call_id: str | None = None) -> dict:
+        if call_id is None:
+            active = [
+                c for c in self.sessions.values() if c.mode == "roleplay" and c.state == "active"
+            ]
+            if len(active) != 1:
+                return {
+                    "stopped": False,
+                    "message": "No single active role-play. Supply its call_id to stop a prepared test.",
+                }
+            call_id = active[0].id
+        call = self.get(call_id)
+        if call.mode != "roleplay":
+            raise ValueError("test_stop cannot affect a real telephone call.")
+        self.interrupt(call_id)
+        return self.finish(call_id, "cancelled", "Developer stopped the role-play.")
+
+    def _check_audio_owner(self):
+        if any(s.state == "active" and s.bridge is not None for s in self.sessions.values()):
+            raise ValueError("Only one telephone or role-play session may own the audio devices.")
+
+    def _start_bridge(self, call, config, **options):
+        bridge = AudioBridge(
+            config, lambda a, at: self._enqueue(call, a, at), call.error, **options
+        )
+        try:
+            bridge.start()
+        except Exception:
+            bridge.close()
+            raise
+        call.bridge = bridge
+        call.transcriber = threading.Thread(target=self._transcribe, args=(call,), daemon=True)
+        call.transcriber.start()
 
     def get(self, call_id: str) -> Session:
         if call_id not in self.sessions:
@@ -158,26 +333,17 @@ class Engine:
                 raise ValueError("Call has already started or finished; connect is not retryable.")
             if call.plan.fingerprint() != plan_id:
                 raise ValueError("Plan changed; use the exact reviewed plan_id.")
+            if call.mode == "roleplay":
+                raise ValueError(
+                    "Use test_start for a human role-play; do not use Phone or connect."
+                )
             if call.mode == "live":
                 if not (authorized and connected and routing_verified):
                     raise ValueError(
                         "Live audio requires authorization, an observed connected Phone call, and verified routing."
                     )
-                if any(s.state == "active" and s.mode == "live" for s in self.sessions.values()):
-                    raise ValueError("Only one live call may own the audio devices.")
-                bridge = AudioBridge(
-                    self.config, lambda a, at: self._enqueue(call, a, at), call.error
-                )
-                try:
-                    bridge.start()
-                except Exception:
-                    bridge.close()
-                    raise
-                call.bridge = bridge
-                call.transcriber = threading.Thread(
-                    target=self._transcribe, args=(call,), daemon=True
-                )
-                call.transcriber.start()
+                self._check_audio_owner()
+                self._start_bridge(call, self.config)
             call.state = "active"
             call.connected_at = time.monotonic()
             call.event(
@@ -193,6 +359,8 @@ class Engine:
 
     def dial_request(self, call_id: str, plan_id: str, authorized: bool = False) -> dict:
         call = self.get(call_id)
+        if call.mode == "roleplay":
+            raise ValueError("Dialing is disabled in human role-play test mode.")
         if call.state != "prepared" or call.plan.fingerprint() != plan_id:
             raise ValueError("Dial requires a prepared call and its reviewed plan_id.")
         if not authorized:
@@ -241,6 +409,22 @@ class Engine:
                         inference_seconds=result["inference_seconds"],
                         source="whisper",
                     )
+                    if call.mode == "roleplay" and re.fullmatch(
+                        r"(?:please\s+)?(?:stop|end|exit) (?:the )?test[.!?]*",
+                        result["text"].strip(),
+                        re.IGNORECASE,
+                    ):
+                        # Finish off this worker so it can drain and join without self-deadlock.
+                        self.interrupt(call.id)
+                        threading.Thread(
+                            target=self.finish,
+                            args=(
+                                call.id,
+                                "cancelled",
+                                "Developer ended the role-play with the spoken stop command.",
+                            ),
+                            daemon=True,
+                        ).start()
             except Exception as exc:  # noqa: BLE001 - keep the call alive after an inference failure
                 call.error(f"Transcription failed: {exc}")
             finally:
@@ -325,6 +509,13 @@ class Engine:
                         "cursor": len(call.events),
                         "recording": call.recording,
                         "timed_out": not bool(new),
+                        "audio": {
+                            "input_rms": call.bridge.last_input_rms,
+                            "capturing": call.bridge.last_input_at > 0,
+                            "speaking": call.bridge.playing.is_set(),
+                        }
+                        if call.bridge
+                        else None,
                     }
                 call.condition.wait(timeout=max(0, deadline - time.monotonic()))
 
@@ -332,6 +523,10 @@ class Engine:
         if not re.fullmatch(r"[0-9*#ABCD]{1,16}", digits):
             raise ValueError("Provide 1–16 DTMF characters: 0–9, *, #, A–D.")
         call = self._active(call_id)
+        if call.mode == "roleplay":
+            raise ValueError(
+                "Phone keypad is disabled in human role-play. Ask the developer to act out the IVR."
+            )
         call.event("system", f"Requested Phone keypad digits: {digits}", kind="keypad_request")
         return {
             "digits": digits,
@@ -342,6 +537,8 @@ class Engine:
     def tones(self, call_id: str, digits: str) -> dict:
         with self.lock:
             call = self._active(call_id)
+            if call.mode == "roleplay":
+                raise ValueError("Phone tones are disabled in human role-play.")
             if not re.fullmatch(r"[0-9*#ABCD]{1,16}", digits):
                 raise ValueError("Invalid DTMF digits.")
             audio = dtmf(digits, self.config.sample_rate)
@@ -397,6 +594,14 @@ class Engine:
                 return call.result
             if outcome not in {"completed", "needs_user", "failed", "cancelled", "interrupted"}:
                 raise ValueError("Unknown outcome.")
+            if (
+                call.mode == "roleplay"
+                and outcome == "completed"
+                and (not call.evaluation or any(c["verdict"] != "met" for c in call.evaluation))
+            ):
+                raise ValueError(
+                    "Use test_finish with evidence for each success criterion before claiming completion."
+                )
             call.state = "finishing"
             if call.bridge:
                 call.bridge.close()
@@ -428,6 +633,11 @@ class Engine:
                 "call_id": call.id,
                 "mode": call.mode,
                 "simulated": call.mode == "demo",
+                "test_mode": call.mode == "roleplay",
+                "real_world_actions": False if call.mode != "live" else None,
+                "scenario": call.scenario,
+                "evaluation": call.evaluation,
+                "audio": call.audio_config,
                 "outcome": outcome,
                 "summary": summary,
                 "outcome_source": "controller_reported",
@@ -478,7 +688,7 @@ class Engine:
                 "recording_path": str(folder / "remote.wav")
                 if (folder / "remote.wav").exists()
                 else None,
-                "next_action": "Service restarted; end any remaining Phone call. Persisted events are recoverable; raw audio may need WAV-header repair after a hard crash.",
+                "next_action": "Service restarted; microphone is no longer owned by this session. End any remaining real Phone call. Persisted events are recoverable; raw audio may need WAV-header repair after a hard crash.",
             }
         raise ValueError("No saved call with this ID.")
 
@@ -528,22 +738,26 @@ class Engine:
             if result["recording_path"]
             else "<p>No recording retained.</p>"
         )
+        evaluation = "".join(
+            f'<div class="turn"><div class="who">{esc(c["verdict"])}</div><p>{esc(c["criterion"])}</p><p>{esc(c["explanation"])}</p><p class="meta">Transcript evidence: {esc(str(c["evidence_seq"]))}</p></div>'
+            for c in result.get("evaluation", [])
+        )
         (
             call.folder / "report.html"
         ).write_text(f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>talk2myagent · Call report</title><style>
 :root{{font-family:system-ui;color:#e6e9e7;background:#111815}}body{{max-width:860px;margin:60px auto;padding:0 24px}}h1{{font-size:46px;letter-spacing:-2px;margin:16px 0}}.brand{{color:#a8e5ae;font-weight:650;letter-spacing:1px}}.badge{{display:inline-block;border:1px solid #516459;border-radius:20px;padding:6px 12px;font-size:12px}}.meta,.who{{color:#9daaa2;font-size:13px}}.turn{{padding:14px 20px;border-left:2px solid #3c4b42;margin:14px 0;background:#19231e;border-radius:0 12px 12px 0}}.agent{{border-color:#afe5b1}}.system{{background:transparent;font-size:13px}}p{{line-height:1.6;margin:7px 0}}audio{{width:100%;margin:22px 0}}a{{color:#b4e5bd}}details{{padding:20px;background:#1a241f;border-radius:12px;margin:24px 0}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}footer{{color:#9daaa2;font-size:13px;margin:40px 0}}
 </style><div class="brand">talk2myagent / CALL NOTES</div><h1>{esc(call.plan.objective)}</h1>
-<span class="badge">{"SIMULATED CALL · NO AMAZON CONTACT" if call.mode == "demo" else "LIVE AUDIO SESSION"}</span>
+<span class="badge">{"HUMAN ROLE-PLAY · NO PHONE CALL" if call.mode == "roleplay" else "SIMULATED CALL · NO EXTERNAL CONTACT" if call.mode == "demo" else "LIVE AUDIO SESSION"}</span>
 <p class="meta">{esc(call.created_at)} · {esc(call.id)}</p><p>{esc(result["summary"])}</p>
 {audio}<p class="meta">Remote audio: left channel. Synthesized agent audio: right channel. Agent text is the synthesis input; it does not verify what the recipient heard.</p>
-<details><summary>Exact call plan</summary><pre>{esc(json.dumps(call.plan.model_dump(), indent=2))}</pre></details>
+<details><summary>Exact call plan</summary><pre>{esc(json.dumps(call.plan.model_dump(), indent=2))}</pre></details>{evaluation}
 {rows}<footer>Local recording and transcription. Status: {esc(result["outcome"])}, reported by the controller. <a href="transcript.json">Transcript JSON</a> · <a href="result.json">Tool result</a></footer></html>""")
 
     def _watchdog(self):
         while not self.closed.wait(2):
             for call in list(self.sessions.values()):
-                if call.state != "active" or call.mode != "live":
+                if call.state != "active" or call.mode == "demo":
                     continue
                 now = time.monotonic()
                 if (
@@ -554,7 +768,12 @@ class Engine:
                     self.finish(
                         call.id,
                         "interrupted",
-                        "Audio stopped at the inactivity or duration limit. End Phone call manually.",
+                        "Audio stopped at the inactivity or duration limit. "
+                        + (
+                            "End Phone call manually."
+                            if call.mode == "live"
+                            else "Role-play microphone closed."
+                        ),
                     )
 
     def shutdown(self):
