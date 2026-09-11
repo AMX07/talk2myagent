@@ -20,6 +20,8 @@ from talk2myagent.service import create_app
 class Speech:
     def __init__(self):
         self.spoken = []
+        self.lock = threading.Lock()
+        self.tts_lock = threading.Lock()
 
     def synthesize(self, text, voice=None):
         self.spoken.append(text)
@@ -49,6 +51,24 @@ class Bridge:
 
     def play(self, audio, rate):
         return len(audio) / rate
+
+    def begin(self):
+        bridge = self
+
+        class Playback:
+            written = 0.0
+
+            def write(self, audio, rate):
+                self.written += len(audio) / rate
+                return not bridge.playback_stop.is_set()
+
+            def finish(self):
+                bridge.playing.clear()
+                return self.written, bridge.playback_stop.is_set()
+
+        self.playback_stop.clear()
+        self.playing.set()
+        return Playback()
 
     def close(self):
         self.closed = True
@@ -86,6 +106,7 @@ def prepare(engine, scenario):
 
 
 def start(engine, scenario, **kwargs):
+    kwargs.setdefault("controller", "host")
     p = prepare(engine, scenario)
     return engine.test_start(p["call_id"], p["plan_id"], **kwargs)
 
@@ -112,7 +133,7 @@ def test_starts_with_greeting_and_same_speech_pipeline(engine, scenario):
     assert call.recording
     assert p["audio"]["input_device"] == "Physical mic"
     with pytest.raises(ValueError, match="already started"):
-        engine.test_start(call.id, call.plan.fingerprint())
+        engine.test_start(call.id, call.plan.fingerprint(), controller="host")
 
 
 def test_headphones_enable_full_duplex_and_recording_can_be_off(engine, scenario):
@@ -129,7 +150,7 @@ def test_roleplay_cannot_dial_or_use_phone_connect(engine, scenario):
         engine.dial_request(p["call_id"], p["plan_id"], authorized=True)
     with pytest.raises(ValueError, match="Use test_start"):
         engine.connect(p["call_id"], p["plan_id"], True, True, True)
-    engine.test_start(p["call_id"], p["plan_id"])
+    engine.test_start(p["call_id"], p["plan_id"], controller="host")
     for fn in [engine.keypad, engine.tones]:
         with pytest.raises(ValueError, match="disabled"):
             fn(p["call_id"], "123")
@@ -141,7 +162,7 @@ def test_only_one_audio_session_at_once(engine, scenario):
     start(engine, scenario)
     p = prepare(engine, scenario)
     with pytest.raises(ValueError, match="Only one"):
-        engine.test_start(p["call_id"], p["plan_id"])
+        engine.test_start(p["call_id"], p["plan_id"], controller="host")
 
 
 def test_completion_requires_recipient_evidence_for_all_criteria(engine, scenario):
@@ -223,7 +244,7 @@ def test_roleplay_rpc_contract(engine, scenario):
             "/rpc",
             json={
                 "operation": "test_start",
-                "arguments": {"call_id": cid, "plan_id": p.json()["plan_id"]},
+                "arguments": {"call_id": cid, "plan_id": p.json()["plan_id"], "controller": "host"},
             },
         )
         assert result.status_code == 200
@@ -277,7 +298,7 @@ def test_stop_during_model_warmup_never_opens_microphone(engine, scenario):
 
     def start_test():
         try:
-            engine.test_start(call.id, p["plan_id"])
+            engine.test_start(call.id, p["plan_id"], controller="host")
         except ValueError as exc:
             errors.append(str(exc))
 

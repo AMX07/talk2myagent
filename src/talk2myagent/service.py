@@ -11,6 +11,39 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, validate_cal
 from .config import runtime_dir, settings
 from .engine import Engine
 
+OPERATIONS = (
+    "doctor",
+    "phone_state",
+    "audio_restore",
+    "plan_from_task",
+    "call_start",
+    "call_wait",
+    "call_status",
+    "hangup",
+    "test_status",
+    "test_prepare",
+    "test_start",
+    "test_finish",
+    "test_stop",
+    "conversation_ready",
+    "conversation_start",
+    "conversation_wait",
+    "conversation_review",
+    "prepare",
+    "dial_request",
+    "connect",
+    "recording_start",
+    "recording_stop",
+    "say",
+    "listen",
+    "keypad",
+    "tones",
+    "interrupt",
+    "simulate_remote",
+    "finish",
+    "result",
+)
+
 
 class Request(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -19,34 +52,7 @@ class Request(BaseModel):
 
 
 def create_app(engine: Engine) -> FastAPI:
-    operations = {
-        name: validate_call(getattr(engine, name))
-        for name in (
-            "doctor",
-            "test_status",
-            "test_prepare",
-            "test_start",
-            "test_finish",
-            "test_stop",
-            "conversation_ready",
-            "conversation_start",
-            "conversation_wait",
-            "conversation_review",
-            "prepare",
-            "dial_request",
-            "connect",
-            "recording_start",
-            "recording_stop",
-            "say",
-            "listen",
-            "keypad",
-            "tones",
-            "interrupt",
-            "simulate_remote",
-            "finish",
-            "result",
-        )
-    }
+    operations = {name: validate_call(getattr(engine, name)) for name in OPERATIONS}
 
     @asynccontextmanager
     async def lifespan(app):
@@ -57,7 +63,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"ok": True, "service": "talk2myagent", "version": "0.1.0"}
+        return {"ok": True, "service": "talk2myagent", "version": "0.2.0"}
 
     @app.post("/rpc")
     def rpc(request: Request):

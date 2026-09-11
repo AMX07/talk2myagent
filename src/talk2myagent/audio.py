@@ -117,6 +117,107 @@ class Segmenter:
         return audio
 
 
+class Monitor:
+    """Plays a copy of both call sides on a human-facing device so the room can listen."""
+
+    def __init__(self, device_name: str, rate: int):
+        self.rate = rate
+        self.lock = threading.Lock()
+        self.buffer = np.zeros(0, np.float32)
+        self.stream = sd.OutputStream(
+            device=device_index(device_name, "outputs"),
+            samplerate=rate,
+            channels=1,
+            dtype="float32",
+            blocksize=960,
+            callback=self._callback,
+        )
+        self.stream.start()
+
+    def _callback(self, outdata, frames, timing, status):
+        with self.lock:
+            chunk, self.buffer = self.buffer[:frames], self.buffer[frames:]
+        outdata[:, 0] = 0
+        outdata[: len(chunk), 0] = chunk
+
+    def feed(self, block: np.ndarray, rate: int | None = None):
+        if rate and rate != self.rate:
+            block = resample(block, rate, self.rate)
+        with self.lock:
+            if len(self.buffer) > self.rate * 8:  # never let the monitor lag the call
+                self.buffer = np.zeros(0, np.float32)
+            self.buffer = np.concatenate((self.buffer, block.astype(np.float32)))
+
+    def drain(self, timeout: float = 15):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self.lock:
+                if len(self.buffer) == 0:
+                    return
+            time.sleep(0.02)
+
+    def close(self):
+        try:
+            self.stream.stop()
+            self.stream.close()
+        except Exception:  # noqa: BLE001, S110 - closing is best effort
+            pass
+
+
+class Playback:
+    """One outgoing utterance, written in chunks as sentences are synthesized."""
+
+    def __init__(self, bridge: AudioBridge):
+        self.bridge = bridge
+        self.rate = bridge.config.sample_rate
+        self.stream = None
+        self.written = 0
+        self.underflows = 0
+        self.interrupted = False
+        self.started_at = time.monotonic()
+        bridge.playback_stop.clear()
+        with bridge.suppression_lock:
+            bridge.play_started = self.started_at
+            bridge.playing.set()
+
+    def write(self, audio: np.ndarray, rate: int) -> bool:
+        if self.interrupted:
+            return False
+        samples = resample(audio, rate, self.rate)
+        if self.stream is None:
+            self.stream = sd.OutputStream(
+                device=device_index(self.bridge.config.output_device, "outputs"),
+                samplerate=self.rate,
+                channels=1,
+                dtype="float32",
+                blocksize=960,
+            )
+            self.stream.start()
+        for offset in range(0, len(samples), 960):
+            if self.bridge.playback_stop.is_set():
+                self.interrupted = True
+                return False
+            block = samples[offset : offset + 960]
+            if self.stream.write(block):
+                self.underflows += 1
+            if self.bridge.monitor:
+                self.bridge.monitor.feed(block)
+            self.written += len(block)
+        return True
+
+    def finish(self) -> tuple[float, bool]:
+        if self.stream is not None:
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except Exception:  # noqa: BLE001, S110 - device may already be gone
+                pass
+        with self.bridge.suppression_lock:
+            self.bridge.suppression_windows.append((self.started_at, time.monotonic() + 0.45))
+            self.bridge.playing.clear()
+        return self.written / self.rate, self.interrupted
+
+
 class AudioBridge:
     def __init__(
         self,
@@ -126,6 +227,7 @@ class AudioBridge:
         *,
         speaker_safe: bool = False,
         allow_shared_device: bool = False,
+        monitor_device: str | None = None,
     ):
         self.config, self.on_segment, self.on_error = config, on_segment, on_error
         self.blocks: queue.Queue = queue.Queue(maxsize=500)
@@ -145,6 +247,8 @@ class AudioBridge:
         self.last_input_at = 0.0
         self.detector = None
         self.last_voice_at = 0.0
+        self.monitor_device = monitor_device
+        self.monitor: Monitor | None = None
 
     def start(self):
         if self.config.vad_backend == "silero":
@@ -164,6 +268,8 @@ class AudioBridge:
             callback=self._callback,
         )
         self.stream.start()
+        if self.monitor_device:
+            self.monitor = Monitor(self.monitor_device, self.config.sample_rate)
         self.thread = threading.Thread(target=self._consume, daemon=True)
         self.thread.start()
 
@@ -219,6 +325,8 @@ class AudioBridge:
                     was_suppressed = True
                     continue
                 was_suppressed = False
+                if self.monitor:
+                    self.monitor.feed(block)
                 active = (
                     self.detector.feed(block)
                     if self.detector
@@ -228,7 +336,7 @@ class AudioBridge:
                     self.last_voice_at = at + len(block) / self.config.sample_rate
                 if self.playing.is_set() and active:
                     overlap += len(block) / self.config.sample_rate
-                    if overlap >= 0.3:
+                    if overlap >= self.config.barge_in_seconds:
                         self.playback_stop.set()
                 else:
                     overlap = 0.0
@@ -263,35 +371,16 @@ class AudioBridge:
                 self.writer.close()
                 self.writer = None
 
+    def begin(self) -> Playback:
+        return Playback(self)
+
     def play(self, audio: np.ndarray, rate: int) -> float:
-        outgoing = device_index(self.config.output_device, "outputs")
-        samples = resample(audio, rate, self.config.sample_rate)
-        self.playback_stop.clear()
-        written = 0
-        with self.suppression_lock:
-            self.play_started = time.monotonic()
-            self.playing.set()
+        playback = self.begin()
         try:
-            with sd.OutputStream(
-                device=outgoing,
-                samplerate=self.config.sample_rate,
-                channels=1,
-                dtype="float32",
-                blocksize=960,
-            ) as stream:
-                for offset in range(0, len(samples), 960):
-                    if self.playback_stop.is_set():
-                        break
-                    block = samples[offset : offset + 960]
-                    underflow = stream.write(block)
-                    if underflow:
-                        self.on_error("Audio output underflow; remote party may have heard a gap.")
-                    written += len(block)
+            playback.write(audio, rate)
         finally:
-            with self.suppression_lock:
-                self.suppression_windows.append((self.play_started, time.monotonic() + 0.45))
-                self.playing.clear()
-        return written / self.config.sample_rate
+            played, _ = playback.finish()
+        return played
 
     def close(self):
         self.playback_stop.set()
@@ -302,6 +391,9 @@ class AudioBridge:
         if self.thread:
             self.thread.join(timeout=5)
         self.stop_recording()
+        if self.monitor:
+            self.monitor.close()
+            self.monitor = None
 
 
 def dtmf(digits: str, rate: int = 48000) -> np.ndarray:

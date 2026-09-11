@@ -14,13 +14,18 @@ class Settings(BaseModel):
     input_device: str = "BlackHole 16ch"
     output_device: str = "BlackHole 2ch"
     sample_rate: int = 48000
-    stt_model: str = "mlx-community/whisper-small.en-mlx"
+    stt_model: str = "mlx-community/whisper-large-v3-turbo"
     voice: str = "af_heart"
-    silence_seconds: float = Field(default=0.7, ge=0.2, le=3)
+    silence_seconds: float = Field(default=0.55, ge=0.2, le=3)
+    barge_in_seconds: float = Field(default=0.35, ge=0.1, le=2)
     speech_threshold: float = Field(default=0.008, gt=0, lt=1)
     vad_backend: Literal["silero", "rms"] = "silero"
     vad_probability: float = Field(default=0.5, gt=0, lt=1)
-    conversation_model: str = "Qwen/Qwen3-4B-MLX-4bit"
+    conversation_model: str = "Qwen/Qwen3-8B-MLX-4bit"
+    conversation_prefix_cache: bool = True
+    monitor_device: str | None = None
+    greeting_wait_seconds: float = Field(default=6, ge=0, le=30)
+    connect_timeout_seconds: float = Field(default=60, ge=10, le=180)
     conversation_max_tokens: int = Field(default=180, ge=32, le=512)
     conversation_timeout_seconds: float = Field(default=20, ge=2, le=60)
     conversation_silence_seconds: float = Field(default=30, ge=5, le=120)

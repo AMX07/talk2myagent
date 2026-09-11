@@ -17,10 +17,15 @@ class Brain:
     def ready(self):
         return {"ready": True}
 
-    def respond(self, plan, events, cancel):
+    def prepare(self, plan):
+        return {"prefix_cached": False}
+
+    def respond(self, plan, events, cancel, on_sentence=None):
         self.seen.append((plan, events))
         remote = [e for e in events if e["speaker"] == "remote"]
         text, status = next(self.replies)
+        if on_sentence:
+            on_sentence(text)
         return Reply(say=text, status=status, evidence_seq=[remote[-1]["seq"]]), {
             "generation_seconds": 0.01
         }
@@ -70,8 +75,8 @@ def test_local_worker_takes_multiple_turns_without_codex_and_requires_review(eng
     ]
     result = engine.test_finish(call.id, "completed", "Bike ready at four.", checks)
     assert result["outcome"] == "completed" and not result["review_required"]
-    assert result["outcome_source"] == "codex_reviewed"
-    assert result["transcript"][-1]["text"].startswith("Codex reviewed")
+    assert result["outcome_source"] == "host_reviewed"
+    assert result["transcript"][-1]["text"].startswith("Host reviewed")
 
 
 def test_rejects_duplicate_delegation_and_second_speaker(engine, scenario):
@@ -88,7 +93,7 @@ def test_stop_during_generation_never_plays_late_reply(engine, scenario):
     generating = threading.Event()
 
     class SlowBrain(Brain):
-        def respond(self, plan, events, cancel):
+        def respond(self, plan, events, cancel, on_sentence=None):
             generating.set()
             cancel.wait(3)
             return Reply(say="Too late", status="continue"), {}
@@ -105,12 +110,14 @@ def test_stop_during_generation_never_plays_late_reply(engine, scenario):
 
 def test_new_recipient_information_discards_stale_generated_reply(engine, scenario):
     class UpdatingBrain(Brain):
-        def respond(self, plan, events, cancel):
+        def respond(self, plan, events, cancel, on_sentence=None):
             if not self.seen:
                 self.seen.append(events)
                 call.event("remote", "Correction: pickup is tomorrow at four.")
+                if on_sentence:
+                    on_sentence("Stale reply")
                 return Reply(say="Stale reply", status="continue"), {}
-            return super().respond(plan, events, cancel)
+            return super().respond(plan, events, cancel, on_sentence)
 
     brain = UpdatingBrain([("Tomorrow at four, thank you.", "resolved")])
     call = autonomous(engine, scenario, brain)
