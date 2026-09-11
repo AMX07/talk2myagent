@@ -72,7 +72,7 @@ def main():
             print(json.dumps(request("test_status"), indent=2))
             print(
                 '\nTest mode ready. In Codex, say "Enter test mode", then describe the task.\n'
-                'The agent prepares a plan. Say "Start test" when ready to play the recipient.\n'
+                "The agent prepares a plan and starts speaking. Ask it to wait if you want to review first.\n"
                 'Use "stop test" aloud or run: uv run t2ma test-stop'
             )
         elif args.command == "test-stop":

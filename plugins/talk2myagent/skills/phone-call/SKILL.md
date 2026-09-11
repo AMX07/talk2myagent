@@ -1,6 +1,6 @@
 ---
 name: phone-call
-description: Prepare and conduct customer-support phone calls through the Mac Phone app with local speech, independent recording, and a returned transcript. Use for requests to call a business or continue a support case by phone.
+description: Conduct phone calls or spoken developer role-play tests with local speech, recording, and transcripts. Use for requests to call a business, enter test mode, or test a voice agent with the developer acting as the recipient.
 ---
 
 # Phone calls from this Mac
@@ -8,6 +8,62 @@ description: Prepare and conduct customer-support phone calls through the Mac Ph
 You are the conversation's single decision-maker. The local tools provide speech
 recognition, synthesis, recording, and saved state; they do not contain another
 reasoning agent. They cannot access ChatGPT's built-in voice session.
+
+## Human role-play test mode
+
+When the developer asks to enter test mode or to act as the call recipient, use
+`phone_test_mode`. This inspects physical devices without opening the microphone.
+Tell them that this is a local recorded test, they will supply the caller's task
+first, then act as the recipient, and they can say **stop test** to exit. Wait for
+their task if it has not been provided. Do not select a sample task for them.
+
+When they provide the task:
+
+1. Treat that typed instruction as the caller's objective. Infer the recipient
+   role and create a `TestScenario` using `phone_test_prepare`. Preserve the
+   original task verbatim in `user_request`; include available facts, a greeting
+   that states identity and purpose, conditional dialogue, limits, and measurable
+   success criteria. Use facts supplied at test-time; ask for essential missing
+   information rather than inventing it. Fictional facts are fine when requested.
+2. Briefly show the plan and say they are now playing the recipient. A task
+   submitted in test mode is authorization to start the requested local voice
+   test. Do not add another approval step unless they asked to review/wait first.
+   Call `phone_test_start` with the returned IDs. It starts mic capture, enables
+   recording by default, and **speaks the greeting itself**; do not repeat it.
+3. Continue this same turn with `phone_listen` / `phone_say`. Do not stop after
+   the greeting or ask the developer to type every reply. Listen to the physical
+   microphone and respond through local speech. Answer the recipient's questions
+   using the saved facts, clarify new information, and pursue the objective.
+   Never fabricate recipient speech with `phone_simulate_remote` in this mode.
+4. Read the returned cursor and pass it to the next listen. Stay in character
+   during the spoken conversation. The developer's speech is the recipient's
+   dialogue; typed messages are test controls or task corrections. Only execute
+   simulated business actions. Do not use Phone, browse an account, send messages,
+   or invoke tools with real external effects as part of a role-play.
+5. If the recipient confirms the objective, speak a short closing. Evaluate each
+   success criterion with `phone_test_finish`, citing the recipient event `seq`
+   IDs. `completed` requires all criteria met; blocked/uncertain outcomes remain
+   `needs_user` or `failed`. Then return to the task-owner role and summarize
+   what was achieved, evidence, and remaining actions, with transcript/recording
+   links. Explicitly label the outcome as a role-play result.
+
+Use **speakers** mode by default. It suppresses mic input during playback and
+for 450 ms afterward to avoid acoustic feedback; tell the developer to reply
+after the agent finishes. It is turn-taking, not acoustic echo cancellation.
+Use **headphones** mode when the developer confirms headphones are in use; this
+permits barge-in. No BlackHole driver, iPhone, or real phone number is needed.
+
+For immediate exit, use `phone_test_stop`. A recognized standalone **stop test**,
+**end test**, or **exit test** also stops the local session without waiting for
+Codex to respond. In speaker mode the spoken command is heard only during a
+listening window; `uv run t2ma test-stop` remains available during playback.
+If a listen returns a terminal state, read `phone_result` and report the partial
+outcome. If three 25-second waits yield no recipient speech, check whether they
+are still there once; after another silent wait, stop and report `needs_user`.
+
+The developer provides a new task for each test. Existing scripted `demo` mode
+is a separate regression rehearsal. Read `docs/TESTING.md` in the source repo for
+setup and the lifecycle contract when needed.
 
 ## Prepare
 

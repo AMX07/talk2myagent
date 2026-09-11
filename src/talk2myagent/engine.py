@@ -46,6 +46,7 @@ class Session:
         self.remote_demo: list[tuple[float, np.ndarray, int]] = []
         self.demo_clock = 0.0
         self.result: dict | None = None
+        self.cancel_requested = threading.Event()
         self.scenario: dict | None = None
         self.evaluation: list[dict] = []
         self.audio_config: dict | None = None
@@ -143,6 +144,9 @@ class Engine:
     def test_status(self) -> dict:
         """Enter the voice playground without choosing a task or opening a mic."""
         inventory = devices()
+        roleplays = [c for c in self.sessions.values() if c.mode == "roleplay"]
+        active = [c for c in roleplays if c.state == "active"]
+        ready = [c for c in roleplays if c.state == "prepared"]
         try:
             incoming, outgoing = human_devices()
             error = None
@@ -150,8 +154,9 @@ class Engine:
             incoming, outgoing, error = None, None, str(exc)
         return {
             "mode": "roleplay",
-            "phase": "awaiting_task",
-            "microphone_opened": False,
+            "phase": "active" if active else "ready" if ready else "awaiting_task",
+            "microphone_opened": bool(active),
+            "opened_by_this_request": False,
             "dialing_enabled": False,
             "devices": inventory,
             "suggested_input": incoming,
@@ -208,6 +213,8 @@ class Engine:
             # Warm inference before the microphone opens, so the greeting is ready promptly.
             self.speech.synthesize("Ready.")
             self.speech.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+            if call.cancel_requested.is_set():
+                raise ValueError("Test start cancelled before the microphone opened.")
             config = self.config.model_copy(
                 update={"input_device": incoming, "output_device": outgoing}
             )
@@ -235,7 +242,9 @@ class Engine:
                 greeting = self.say(call_id, call.plan.opening)
             except Exception:
                 self.finish(
-                    call_id, "failed", "Role-play failed while starting; microphone closed."
+                    call_id,
+                    "cancelled" if call.cancel_requested.is_set() else "failed",
+                    "Role-play stopped while starting; microphone closed.",
                 )
                 raise
             return {
@@ -290,6 +299,7 @@ class Engine:
         call = self.get(call_id)
         if call.mode != "roleplay":
             raise ValueError("test_stop cannot affect a real telephone call.")
+        call.cancel_requested.set()
         self.interrupt(call_id)
         return self.finish(call_id, "cancelled", "Developer stopped the role-play.")
 
@@ -415,6 +425,7 @@ class Engine:
                         re.IGNORECASE,
                     ):
                         # Finish off this worker so it can drain and join without self-deadlock.
+                        call.cancel_requested.set()
                         self.interrupt(call.id)
                         threading.Thread(
                             target=self.finish,
@@ -466,6 +477,8 @@ class Engine:
         with self.lock:
             call = self._active(call_id)
             audio, rate = self.speech.synthesize(text)
+            if call.cancel_requested.is_set():
+                raise RuntimeError("Role-play stopped; generated speech was not played.")
             at = call.elapsed()
             path = call.folder / f"agent-{uuid.uuid4().hex[:8]}.wav"
             # Preserve the generated waveform, never claim it verifies what the recipient heard.

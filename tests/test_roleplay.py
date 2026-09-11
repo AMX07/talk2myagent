@@ -261,3 +261,36 @@ def test_speaker_mode_suppresses_playback_and_tail_not_future_human():
     assert not bridge.suppresses(12.5)
     bridge.speaker_safe = False
     assert not bridge.suppresses(11)
+
+
+def test_stop_during_model_warmup_never_opens_microphone(engine, scenario):
+    p = prepare(engine, scenario)
+    call = engine.get(p["call_id"])
+    warming, release = threading.Event(), threading.Event()
+    original = engine.speech.synthesize
+    errors, results = [], []
+
+    def blocked_synthesis(*args, **kwargs):
+        warming.set()
+        assert release.wait(2)
+        return original(*args, **kwargs)
+
+    def start_test():
+        try:
+            engine.test_start(call.id, p["plan_id"])
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    engine.speech.synthesize = blocked_synthesis
+    starter = threading.Thread(target=start_test)
+    starter.start()
+    assert warming.wait(1)
+    stopper = threading.Thread(target=lambda: results.append(engine.test_stop(call.id)))
+    stopper.start()
+    assert call.cancel_requested.wait(1)
+    release.set()
+    starter.join(2)
+    stopper.join(2)
+    assert call.bridge is None
+    assert results[0]["outcome"] == "cancelled"
+    assert "before the microphone opened" in errors[0]

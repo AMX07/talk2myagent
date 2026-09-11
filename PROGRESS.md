@@ -2,8 +2,34 @@
 
 ## Current state — September 11, 2026
 
-Working local speech demo and installed Codex plugin. **No live Amazon call has
+Working local speech demo, human role-play test mode, and installed Codex plugin. **No live Amazon call has
 been made by this project, and no real order has been changed.**
+
+### Human role-play update
+
+- Developer explicitly wants to supply the task at test-time. Do not pick a
+  preset task or start microphone capture before that task/readiness is provided.
+- Say **Enter test mode**, then describe a task in Codex. The agent prepares it,
+  switches the developer to the recipient role, speaks its greeting, and keeps
+  using listen/say until an outcome. It returns to task-owner mode for results.
+- Added `phone_test_mode`, `phone_test_prepare`, `phone_test_start`,
+  `phone_test_finish`, and `phone_test_stop` (18 MCP tools total).
+- Physical MacBook mic/speaker selected; 48 kHz mono format preflight passed.
+  No microphone was opened for the preparation/transport checks. Human speech
+  quality and task completion await the developer's interactive test.
+- Speakers suppress microphone input during playback + 450 ms tail. Headphones
+  support basic barge-in. This is not an acoustic echo canceller.
+- Test-mode dialing/keypad/synthetic recipient injection are rejected. Success
+  requires checks citing actual recipient transcript event IDs. The judge is
+  Codex; evidence semantics are not independently verified by another model.
+- 35 tests pass; Ruff passes. Updated MCP test passed with 18 tools, arbitrary
+  role-play preparation/cancellation, and original actual speech round-trip.
+  Transport verification: `runs/20260911-205535-7343f2fb/`.
+- Both BlackHole devices are now present on the host (installed since the initial
+  build). Role-play uses physical devices and does not require those drivers.
+- Read `docs/TESTING.md` for entry, startup, stop, and result flows.
+
+The earlier build checkpoints below are historical; the update above is current.
 
 All source is in `/Users/anshmittal/Documents/talk2myagent`. Git is on `main`.
 Run `git log --oneline` to see incremental checkpoints. `uv.lock` pins packages.

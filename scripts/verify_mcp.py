@@ -59,6 +59,36 @@ async def main():
         )
         assert Path(result["recording_path"]).exists()
         assert result["simulated"]
+        assert {
+            "phone_test_mode",
+            "phone_test_prepare",
+            "phone_test_start",
+            "phone_test_finish",
+            "phone_test_stop",
+        } <= names
+        test_status = await call("phone_test_mode", {})
+        assert not test_status["opened_by_this_request"]
+        roleplay = await call(
+            "phone_test_prepare",
+            {
+                "scenario": {
+                    "user_request": "Ask a bicycle mechanic whether ticket B-42 is ready.",
+                    "recipient_role": "Bicycle mechanic",
+                    "customer_name": "Morgan",
+                    "objective": "Find the repair status",
+                    "facts": {"ticket": "B-42"},
+                    "greeting": "Hello, I am calling for Morgan about bicycle repair B-42. Is it ready?",
+                    "dialogue": {"ticket": "B-42"},
+                    "allowed_actions": ["Ask for repair status"],
+                    "stop_conditions": ["Developer stops the test"],
+                    "success_criteria": ["Recipient confirms repair status"],
+                }
+            },
+        )
+        assert roleplay["phase"] == "ready" and not roleplay["dialing_enabled"]
+        stopped = await call("phone_test_stop", {"call_id": roleplay["call_id"]})
+        assert stopped["test_mode"] and stopped["outcome"] == "cancelled"
+        assert not stopped["recording_path"]  # Preparation does not open the mic.
         print(
             json.dumps(
                 {

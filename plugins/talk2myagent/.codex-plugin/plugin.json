@@ -1,19 +1,19 @@
 {
   "name": "talk2myagent",
-  "version": "0.1.0+codex.20260911202923",
-  "description": "Local customer-support calling with a single Codex agent, open speech models, recording and transcripts.",
+  "version": "0.1.0+codex.20260911205624",
+  "description": "Local phone calls and human voice role-play tests, with a single Codex agent, speech models, recordings and transcripts.",
   "author": {
     "name": "Local developer"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "talk2myagent",
-    "shortDescription": "Call support from your Mac with local speech.",
-    "longDescription": "Prepare a precise call plan, dial through the Mac Phone app with computer use, listen and speak with local Whisper and Kokoro, then return the transcript and recording.",
+    "shortDescription": "Call support or test a spoken role-play on your Mac.",
+    "longDescription": "Enter test mode and supply any call task; act as the recipient while the agent converses through the microphone and speakers. Or use Mac Phone calling. Both paths use local speech, recordings, and transcripts.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Use phone-call to prepare and rehearse an Amazon return call."
+    "defaultPrompt": "Enter human role-play test mode and wait for me to describe the task."
   },
   "mcpServers": "./.mcp.json"
 }
