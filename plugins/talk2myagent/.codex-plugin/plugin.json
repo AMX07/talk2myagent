@@ -1,0 +1,19 @@
+{
+  "name": "talk2myagent",
+  "version": "0.1.0",
+  "description": "Talk2myagent plugin",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Talk2myagent",
+    "shortDescription": "Use Talk2myagent in Codex.",
+    "longDescription": "Talk2myagent adds a local Codex plugin scaffold.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Help me use Talk2myagent."
+  },
+  "mcpServers": "./.mcp.json"
+}
