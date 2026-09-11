@@ -39,6 +39,7 @@ def main():
     sub.add_parser("mcp", help="Run the Codex MCP bridge over stdio")
     sub.add_parser("doctor", help="Inspect audio setup")
     sub.add_parser("models", help="Download open speech models")
+    sub.add_parser("conversation-model", help="Download the configured local conversation model")
     sub.add_parser(
         "test", help="Enter human role-play; inspect devices and wait for a task in Codex"
     )
@@ -69,6 +70,10 @@ def main():
             mcp_main()
         elif args.command == "models":
             download_models()
+        elif args.command == "conversation-model":
+            from huggingface_hub import snapshot_download
+
+            print(snapshot_download(settings().conversation_model))
         elif args.command == "test":
             from .client import request
 

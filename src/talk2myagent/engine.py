@@ -50,6 +50,9 @@ class Session:
         self.scenario: dict | None = None
         self.evaluation: list[dict] = []
         self.audio_config: dict | None = None
+        self.conversation: dict = {"controller": "codex", "phase": "manual"}
+        self.conversation_worker: threading.Thread | None = None
+        self.review_required = False
         self.save()
 
     def elapsed(self) -> float:
@@ -70,6 +73,8 @@ class Session:
                     "recording_basis": self.recording_basis,
                     "scenario": self.scenario,
                     "audio_config": self.audio_config,
+                    "conversation": self.conversation,
+                    "review_required": self.review_required,
                 },
             )
 
@@ -101,6 +106,7 @@ class Engine:
         self.sessions: dict[str, Session] = {}
         self.lock = threading.RLock()
         self.closed = threading.Event()
+        self.brain = None
         threading.Thread(target=self._watchdog, daemon=True).start()
 
     def doctor(self) -> dict:
@@ -198,6 +204,7 @@ class Engine:
         audio_mode: Literal["speakers", "headphones"] = "speakers",
         input_device: str | None = None,
         output_device: str | None = None,
+        controller: Literal["codex", "local"] = "codex",
     ) -> dict:
         with self.lock:
             call = self.get(call_id)
@@ -210,6 +217,10 @@ class Engine:
             if audio_mode not in {"speakers", "headphones"}:
                 raise ValueError("audio_mode must be speakers or headphones.")
             self._check_audio_owner()
+            if controller not in {"codex", "local"}:
+                raise ValueError("controller must be codex or local.")
+            if controller == "local":
+                self.conversation_ready()
             incoming, outgoing = human_devices(input_device, output_device)
             # Warm inference before the microphone opens, so the greeting is ready promptly.
             self.speech.synthesize("Ready.")
@@ -241,6 +252,8 @@ class Engine:
                         call_id, "Developer explicitly started a recorded local role-play test."
                     )
                 greeting = self.say(call_id, call.plan.opening)
+                if controller == "local":
+                    self.conversation_start(call_id, plan_id)
             except Exception:
                 self.finish(
                     call_id,
@@ -256,16 +269,98 @@ class Engine:
                 "audio": call.audio_config,
                 "greeting": greeting,
                 "cursor": 0,
-                "next_step": "Listen to the developer as the recipient. Adapt each response to their actual speech until the objective is confirmed, blocked, or they stop the test.",
+                "conversation": dict(call.conversation),
+                "next_step": (
+                    "Local agent owns spoken turns. Use conversation_wait, then review the outcome and evidence with test_finish. Do not alternate say/listen."
+                    if controller == "local"
+                    else "Listen to the developer as the recipient. Adapt each response to their actual speech until the objective is confirmed, blocked, or they stop the test."
+                ),
+            }
+
+    def conversation_ready(self) -> dict:
+        """Preload a cached model without opening audio or starting a conversation."""
+        from .conversation import LocalConversation
+
+        with self.lock:
+            if self.brain is None:
+                self.brain = LocalConversation(self.config, self.speech.lock)
+            return self.brain.ready()
+
+    def conversation_start(self, call_id: str, plan_id: str) -> dict:
+        from .conversation import ConversationWorker
+
+        with self.lock:
+            call = self._active(call_id)
+            if call.plan.fingerprint() != plan_id:
+                raise ValueError("Use the exact prepared plan_id for delegation.")
+            if call.mode not in {"roleplay", "live"}:
+                raise ValueError(
+                    "Autonomous conversation requires a human role-play or connected call."
+                )
+            if call.mode == "live" and not call.recording:
+                raise ValueError(
+                    "Obtain recording consent and start recording before live delegation."
+                )
+            if call.conversation_worker is not None:
+                raise ValueError("Conversation already delegated; do not start a duplicate worker.")
+            self.conversation_ready()
+            call.conversation = {
+                "controller": "local",
+                "phase": "listening",
+                "model": self.config.conversation_model,
+            }
+            call.conversation_worker = ConversationWorker(self, call, self.brain)
+            call.event(
+                "system",
+                "Call plan delegated to the local conversation agent. Codex is outside the spoken-turn loop.",
+            )
+            call.save()
+            call.conversation_worker.start()
+            return {"call_id": call.id, "conversation": dict(call.conversation)}
+
+    def conversation_wait(self, call_id: str, timeout_seconds: float = 25) -> dict:
+        call = self.get(call_id)
+        if not 0 <= timeout_seconds <= 25:
+            raise ValueError("timeout_seconds must be 0–25.")
+        deadline = time.monotonic() + timeout_seconds
+        with call.condition:
+            while call.state in {"active", "finishing"} and call.conversation_worker is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                call.condition.wait(timeout=min(remaining, 0.5))
+            return {
+                "call_id": call.id,
+                "state": call.state,
+                "conversation": dict(call.conversation),
+                "review_required": call.review_required,
+                "result": call.result,
             }
 
     def test_finish(self, call_id: str, outcome: str, summary: str, checks: list[dict]) -> dict:
+        call = self.get(call_id)
+        if call.mode != "roleplay":
+            raise ValueError("test_finish only accepts a role-play session.")
+        return self.conversation_review(call_id, outcome, summary, checks)
+
+    def conversation_review(
+        self,
+        call_id: str,
+        outcome: str,
+        summary: str,
+        checks: list[dict],
+        phone_disconnected: bool = False,
+    ) -> dict:
         with self.lock:
             call = self.get(call_id)
-            if call.mode != "roleplay":
-                raise ValueError("test_finish only accepts a role-play session.")
-            if call.result is not None:
+            if call.result is not None and not call.review_required:
                 return call.result
+            if outcome not in {"completed", "needs_user", "failed", "cancelled", "interrupted"}:
+                raise ValueError("Unknown outcome.")
+            if call.conversation_worker and call.state == "active":
+                raise ValueError(
+                    "Wait for the local conversation to end, or stop it before review."
+                )
             parsed = [CriterionCheck.model_validate(c) for c in checks]
             expected = set(range(len(call.plan.success_criteria)))
             if len(parsed) != len(expected) or {c.criterion_index for c in parsed} != expected:
@@ -284,7 +379,27 @@ class Engine:
                 {**c.model_dump(), "criterion": call.plan.success_criteria[c.criterion_index]}
                 for c in sorted(parsed, key=lambda c: c.criterion_index)
             ]
-            return self.finish(call_id, outcome, summary)
+            call.review_required = False
+            if call.result is None:
+                return self.finish(call_id, outcome, summary, phone_disconnected)
+            call.state = outcome
+            call.conversation["phase"] = "reviewed"
+            call.event("system", "Codex reviewed the conversation. " + summary)
+            call.result.update(
+                outcome=outcome,
+                summary=summary,
+                evaluation=call.evaluation,
+                review_required=False,
+                conversation=dict(call.conversation),
+                outcome_source="codex_reviewed",
+                needs_phone_hangup=call.mode == "live" and not phone_disconnected,
+                next_action="End the Phone call now."
+                if call.mode == "live" and not phone_disconnected
+                else None,
+            )
+            self._persist_result(call, call.result)
+            call.save()
+            return call.result
 
     def test_stop(self, call_id: str | None = None) -> dict:
         if call_id is None:
@@ -486,6 +601,13 @@ class Engine:
             raise ValueError("Speak one short turn of 1–600 characters.")
         with self.lock:
             call = self._active(call_id)
+            if (
+                call.conversation_worker
+                and threading.current_thread() is not call.conversation_worker
+            ):
+                raise ValueError(
+                    "The local conversation agent owns speech; use interrupt or stop instead."
+                )
             synthesis_started = time.monotonic()
             audio, rate = self.speech.synthesize(text)
             synthesis_seconds = time.monotonic() - synthesis_started
@@ -629,6 +751,7 @@ class Engine:
                     "Use test_finish with evidence for each success criterion before claiming completion."
                 )
             call.state = "finishing"
+            call.cancel_requested.set()
             if call.bridge:
                 call.bridge.close()
             if call.recording:
@@ -647,6 +770,8 @@ class Engine:
                     "Transcription did not finish before export; partial transcript. Recover from remote.wav."
                 )
             call.state = outcome
+            if call.conversation_worker and not call.review_required:
+                call.conversation["phase"] = "stopped"
             call.event("system", "Session finished. " + summary)
             call.save()
             audio_path = self._mix(call)
@@ -664,6 +789,8 @@ class Engine:
                 "scenario": call.scenario,
                 "evaluation": call.evaluation,
                 "audio": call.audio_config,
+                "conversation": dict(call.conversation),
+                "review_required": call.review_required,
                 "outcome": outcome,
                 "summary": summary,
                 "outcome_source": "controller_reported",
@@ -677,15 +804,22 @@ class Engine:
                 if hangup
                 else None,
             }
-            write_json(call.folder / "transcript.json", {"mode": call.mode, "events": transcript})
-            (call.folder / "transcript.txt").write_text(
-                "\n".join(f"[{e['at']:07.2f}s] {e['speaker']}: {e['text']}" for e in transcript)
-                + "\n"
-            )
-            write_json(call.folder / "result.json", result)
-            self._report(call, result)
+            self._persist_result(call, result)
             call.result = result
+            with call.condition:
+                call.condition.notify_all()
             return result
+
+    def _persist_result(self, call: Session, result: dict):
+        with call.condition:
+            transcript = sorted([dict(e) for e in call.events], key=lambda e: (e["at"], e["seq"]))
+        result["transcript"] = transcript
+        write_json(call.folder / "transcript.json", {"mode": call.mode, "events": transcript})
+        (call.folder / "transcript.txt").write_text(
+            "\n".join(f"[{e['at']:07.2f}s] {e['speaker']}: {e['text']}" for e in transcript) + "\n"
+        )
+        write_json(call.folder / "result.json", result)
+        self._report(call, result)
 
     def result(self, call_id: str) -> dict:
         if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{8}", call_id):
