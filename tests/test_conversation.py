@@ -406,3 +406,28 @@ def test_checking_with_the_customer_is_a_decision_not_a_memory_lookup(scenario):
     # A question for the customer must not be hijacked into a memory search.
     assert reply.lookup == "" and reply.question.startswith("They want")
     assert "lookup_from" not in metrics
+
+
+def test_a_date_is_the_same_date_however_it_is_written():
+    from talk2myagent.conversation import unsupported_details
+
+    known = "The coffee grinder was delivered on 3 September 2026."
+    for rewritten in [
+        "It was delivered on September 3rd, 2026.",
+        "Delivered 3 September 2026.",
+        "It arrived on Sept 3, 2026.",
+        "It shipped on 9/3/2026.",
+        "It was delivered on September 3rd.",  # the year is implied by the record
+    ]:
+        assert unsupported_details(rewritten, known) == [], rewritten
+
+    # A different day, or a different date entirely, is still an invention.
+    assert unsupported_details("It came on 4 September 2026.", known) == ["4 September 2026"]
+    assert unsupported_details("It arrived on June 15, 2024.", known) == ["June 15, 2024"]
+
+
+def test_one_bad_date_is_reported_once_not_as_two_problems():
+    from talk2myagent.conversation import unsupported_details
+
+    # The digit matcher used to fire inside the date and report "15, 2024" too.
+    assert unsupported_details("Ordered June 15, 2024.", "nothing relevant") == ["June 15, 2024"]

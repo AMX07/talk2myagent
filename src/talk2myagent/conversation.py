@@ -279,10 +279,52 @@ CHECKING = re.compile(
 )
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 DIGIT_RUN = re.compile(r"\d[\d,\-\s.]{1,}\d")
+MONTHS = {
+    name: number
+    for number, names in enumerate(
+        [
+            ("january", "jan"),
+            ("february", "feb"),
+            ("march", "mar"),
+            ("april", "apr"),
+            ("may",),
+            ("june", "jun"),
+            ("july", "jul"),
+            ("august", "aug"),
+            ("september", "sept", "sep"),
+            ("october", "oct"),
+            ("november", "nov"),
+            ("december", "dec"),
+        ],
+        start=1,
+    )
+    for name in names
+}
+_MONTH = "|".join(sorted(MONTHS, key=len, reverse=True))
 DATE = re.compile(
-    r"(?i)\b(?:january|february|march|april|may|june|july|august|september|october|november|"
-    r"december)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*\d{4})?|\b\d{1,2}/\d{1,2}/\d{2,4}\b"
+    rf"(?i)\b(?:(?P<d1>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<m1>{_MONTH})\b\.?,?\s*(?P<y1>\d{{4}})?"
+    rf"|(?P<m2>{_MONTH})\b\.?\s+(?P<d2>\d{{1,2}})(?:st|nd|rd|th)?,?\s*(?P<y2>\d{{4}})?"
+    rf"|(?P<m3>\d{{1,2}})/(?P<d3>\d{{1,2}})/(?P<y3>\d{{2,4}}))"
 )
+
+
+def date_key(match: re.Match) -> tuple[int, int, int | None]:
+    """Canonical (month, day, year) so one date has one identity however it is written."""
+    for month, day, year in (("m1", "d1", "y1"), ("m2", "d2", "y2"), ("m3", "d3", "y3")):
+        if match.group(month):
+            raw = match.group(month)
+            number = MONTHS.get(raw.lower()) or int(raw)
+            written = match.group(year)
+            if written and len(written) == 2:
+                written = "20" + written
+            return number, int(match.group(day)), int(written) if written else None
+    raise ValueError("unreachable: the pattern always fills one alternative")
+
+
+def date_keys(text: str) -> set[tuple[int, int, int | None]]:
+    return {date_key(match) for match in DATE.finditer(text)}
+
+
 CLOSING_QUESTION = re.compile(r"(?i)anything else (?:i|we) can (?:help|assist|do)")
 REQUEST_PATTERN = re.compile(
     r"(?i)\b(please (?:give|provide|confirm|tell|send|share|read|let me know)|could you|"
@@ -312,13 +354,29 @@ def unsupported_details(say: str, allowed_text: str) -> list[str]:
     for match in EMAIL.finditer(say):
         if _normal(match[0]) not in allowed:
             found.append(match[0])
+    # Dates are judged below, as dates; a bare digit run inside one is not a
+    # separate finding, and reporting both made the reason look like two problems.
+    spans = [match.span() for match in DATE.finditer(say)]
     for match in DIGIT_RUN.finditer(say):
+        start, end = match.span()
+        if any(start >= left and end <= right for left, right in spans):
+            continue
         digits = re.sub(r"\D", "", match[0])
         if len(digits) >= 3 and digits not in allowed_digits:
             found.append(match[0])
+    # A date is the same date however it is written, so compare what it means.
+    # Without this, memory can return "3 September 2026" and the agent is blocked
+    # from saying "September 3rd, 2026", which is the same fact.
+    known = date_keys(allowed_text)
+    undated = {(month, day) for month, day, _ in known}
     for match in DATE.finditer(say):
-        if _normal(match[0]) not in allowed:
-            found.append(match[0])
+        month, day, year = date_key(match)
+        if (month, day, year) in known:
+            continue
+        # A day and month with no year still matches a dated record of that day.
+        if year is None and (month, day) in undated:
+            continue
+        found.append(match[0])
     return found
 
 
