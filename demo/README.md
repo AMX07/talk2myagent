@@ -74,11 +74,6 @@ you  ──▶  a host agent (Codex, OpenCode, Claude Code) or the t2ma CLI
 The host agent plans and judges. It is never in the per-turn loop, so replies
 run at local-model speed and a long call costs no agent tokens.
 
-**[Where each platform in the stack attaches →](STACK.md)** — RocketRide,
-Cognee, HydraDB, Modiqo/Rote, Hotdata and Snyk, each mapped to the exact
-function in this repository it would hook into, with the latency budget that
-decides what is allowed anywhere near the per-turn loop.
-
 ---
 
 ## Speed

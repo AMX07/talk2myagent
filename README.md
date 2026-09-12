@@ -4,8 +4,7 @@ A phone-calling agent that runs entirely on this Mac. Give it a task ("return
 my coffee grinder"), it dials through the Phone app over your iPhone, talks to
 whoever answers with local speech models, presses menu digits when asked, hangs
 up, and hands back a transcript and recording. Works from **Codex**, **OpenCode**,
-**Claude Code**, or the **terminal**, all through one local MCP server. That same
-server is what a **[RocketRide](demo/STACK.md)** pipeline calls as tool nodes.
+**Claude Code**, or the **terminal**, all through one local MCP server.
 
 ```sh
 cd talk2myagent
@@ -84,6 +83,6 @@ your Phone version exposes if a control is ever not found.
 - Audio is retained only after the other side agrees; text is always kept.
 - `completed` requires the host to cite recipient evidence for every criterion.
 
-Docs: [the stack and where it attaches](demo/STACK.md) · [the four local models](docs/MODELS.md) · [setup and live calling](docs/SETUP.md) · [hosts and tools](docs/INTERFACES.md)
+Docs: [the four local models](docs/MODELS.md) · [setup and live calling](docs/SETUP.md) · [hosts and tools](docs/INTERFACES.md)
 · [role-play testing](docs/TESTING.md) · [design notes](docs/DECISIONS.md)
 · [resume notes](PROGRESS.md).
