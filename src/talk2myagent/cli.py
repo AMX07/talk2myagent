@@ -120,7 +120,7 @@ def main():
     call.add_argument("--demo", action="store_true", help="Rehearse against a local persona")
     call.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     call.add_argument("--no-monitor", action="store_true", help="Do not play the call aloud")
-    call.add_argument("--recording", choices=["ask", "off"], default="ask")
+    call.add_argument("--recording", choices=["ask", "off", "on"], default="on")
     call.add_argument("--play", action="store_true", help="Demo only: play both voices aloud")
     call.add_argument("--recipient-brief", help="Demo only: persona instructions")
 

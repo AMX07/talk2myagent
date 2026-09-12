@@ -6,6 +6,8 @@ __pycache__/
 .runtime/
 models/
 runs/
+# The customer's own facts and call history.
+memory/
 *.egg-info/
 .DS_Store
 .env

@@ -100,6 +100,11 @@ PAGE = """<!doctype html>
                    border-bottom-left-radius: 20px; border-bottom-right-radius: 7px }
   .system { align-self: center; max-width: 92%; text-align: center; font-size: 12px;
             color: var(--faint); padding: 1px 0 }
+  .memory { align-self: center; max-width: 94%; font-size: 12.5px; line-height: 1.45;
+            padding: 8px 13px; border-radius: 14px; color: rgba(215,235,255,.92);
+            background: rgba(120,170,255,.13); border: 1px solid rgba(140,190,255,.26) }
+  .memory b { color: rgba(170,210,255,.95); font-weight: 600 }
+  .memory .miss { color: rgba(255,190,140,.95) }
 
   .ask { flex: none; margin-top: 10px; padding: 15px 16px; border-radius: 22px;
          background: rgba(255,159,10,.15); border: 1px solid rgba(255,175,60,.42);
@@ -137,6 +142,35 @@ PAGE = """<!doctype html>
          background: linear-gradient(180deg, #ff5f57, #e03a30);
          box-shadow: 0 6px 18px rgba(224,58,48,.38) }
   .end:disabled { opacity: .35; cursor: default; box-shadow: none }
+  .task {
+    flex: none; display: block; margin-top: 12px; padding: 12px 14px; border-radius: 20px;
+    background: rgba(255,255,255,.09); border: 1px solid var(--stroke);
+  }
+  .task .title { font-size: 13px; color: var(--dim); margin-bottom: 8px; letter-spacing: .2px }
+  .task label { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dim) }
+  .task .line1 { display: flex; gap: 8px; margin-top: 8px }
+  .task textarea {
+    width: 100%; min-height: 96px; resize: vertical; font: inherit; color: var(--text);
+    padding: 10px 12px; border-radius: 12px; margin-top: 8px; border: 1px solid var(--stroke);
+    background: rgba(255,255,255,.1);
+  }
+  .task textarea::placeholder, .task input::placeholder { color: var(--faint) }
+  .task input {
+    width: 100%; font: inherit; font-size: 14px; color: var(--text);
+    padding: 10px 12px; border-radius: 12px; border: 1px solid var(--stroke);
+    background: rgba(255,255,255,.1);
+  }
+  .task .line1 input, .task .line2 input { width: 100%; }
+  .task .meta {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px;
+  }
+  .task .row { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+  .task .row button {
+    font: inherit; font-size: 14px; padding: 10px 16px; border-radius: 999px; border: 1px solid var(--stroke);
+    color: var(--text); cursor: pointer; background: rgba(255,255,255,.12)
+  }
+  .task .row button:hover { background: rgba(255,255,255,.22) }
+  .error { color: #ff7c76; font-size: 12px; margin-top: 6px; min-height: 16px }
   .empty { margin: auto; text-align: center; color: var(--faint); font-size: 14px; padding: 0 20px }
   [hidden] { display: none !important }
 </style></head>
@@ -163,9 +197,27 @@ PAGE = """<!doctype html>
       <div class="opts" id="opts"></div>
     </div>
 
+    <div class="task" id="taskCard">
+      <div class="title">Start a role-play test</div>
+      <textarea id="taskPrompt" placeholder="Describe the task, like: 'Call Silicon Valley clinic and set up my annual check-up appointment for next Wednesday.'"></textarea>
+      <div class="line1">
+        <input id="recipient" placeholder="Recipient role (e.g. clinic representative)" value="clinic representative">
+      </div>
+      <div class="line1">
+        <input id="customerName" placeholder="Your name (who the agent represents)" value="Ansh">
+      </div>
+      <textarea id="facts" placeholder="Optional facts to share, one per line: key: value, or paste JSON"></textarea>
+      <div class="row">
+        <label><input type="checkbox" id="record" checked> Keep local recording</label>
+        <button id="startRoleplay">Start role-play</button>
+      </div>
+      <div class="error" id="taskError"></div>
+    </div>
+
     <div class="composer">
       <input id="reply" placeholder="Type to tell the agent what to do…" autocomplete="off">
       <button id="send">Send</button>
+      <button id="remember" title="Save this as a fact the agent can look up on any call">Remember</button>
     </div>
 
     <footer>
@@ -191,7 +243,18 @@ function bubble(event) {
   seen.add(event.seq);
   $("empty")?.remove();
   const row = document.createElement("div");
-  if (event.speaker === "system") {
+  if (event.speaker === "memory") {
+    row.className = "line memory";
+    const found = (event.hits || 0) > 0;
+    const label = document.createElement("b");
+    label.textContent = found ? "Looked up " : "Looked up ";
+    const query = document.createElement("span");
+    query.textContent = "“" + (event.query || "") + "” — ";
+    const answer = document.createElement("span");
+    answer.className = found ? "" : "miss";
+    answer.textContent = event.text;
+    row.append(label, query, answer);
+  } else if (event.speaker === "system") {
     row.className = "line system";
     row.textContent = event.text;
   } else {
@@ -209,25 +272,114 @@ function bubble(event) {
   feed.scrollTop = feed.scrollHeight;
 }
 
-async function post(path, payload) {
-  if (!callId) return;
-  await fetch(path, { method: "POST", headers: {"Content-Type": "application/json"},
-                      body: JSON.stringify({ call_id: callId, ...payload }) });
+function showTaskError(message) {
+  $("taskError").textContent = message || "";
+}
+
+function parseFacts(text) {
+  const raw = text.trim();
+  if (!raw) return {};
+  const tryJson = () => {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("Facts JSON must be an object.");
+    }
+    const values = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!key) continue;
+      values[key] = String(value);
+    }
+    return values;
+  };
+
+  try {
+    return tryJson();
+  } catch (e) {
+    const values = {};
+    for (const line of raw.split("\n")) {
+      const row = line.trim();
+      if (!row) continue;
+      const sep = row.includes(":") ? ":" : row.includes("=") ? "=" : "";
+      if (!sep) throw new Error("Each fact line should be `key: value` or `key = value`.");
+      const i = row.indexOf(sep);
+      const key = row.slice(0, i).trim();
+      const value = row.slice(i + 1).trim();
+      if (!key) throw new Error("Each fact line needs a key.");
+      values[key] = value;
+    }
+    return values;
+  }
+}
+
+function setTaskMode(active) {
+  $("taskCard").hidden = active;
+  $("reply").disabled = !active;
+  $("send").disabled = !active;
+}
+
+async function post(path, payload, requireCall = true) {
+  const body = { ...payload };
+  if (requireCall) {
+    if (!callId) {
+      throw new Error("No active role-play session.");
+    }
+    body.call_id = callId;
+  }
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || result.error) {
+    throw new Error(result.error || `Request failed (${response.status}).`);
+  }
   tick();
+  return result;
+}
+
+function renderNoCall() {
+  $("company").textContent = "Waiting…";
+  $("objective").textContent = "Nothing is on the air right now.";
+  $("tag").textContent = "No call";
+  $("phase").textContent = "Idle";
+  $("dot").className = "dot off";
+  $("bars").hidden = true;
+  $("rec").hidden = true;
+  $("latency").textContent = "";
+  $("end").textContent = "Stop test";
+  $("reply").placeholder = "Type to tell the agent what to do…";
+  setTaskMode(false);
+  const empty = $("empty");
+  if (feed.childElementCount === 0 && !empty) {
+    const blank = document.createElement("div");
+    blank.className = "empty";
+    blank.id = "empty";
+    blank.textContent = "The transcript appears here, line by line, as people speak.";
+    feed.append(blank);
+  }
+  $("ask").hidden = true;
+  $("end").disabled = true;
+  askedFor = null;
 }
 
 function renderAsk(decision) {
   const box = $("ask");
-  if (!decision) { box.hidden = true; askedFor = null; return; }
-  if (askedFor === decision.question) return;
-  askedFor = decision.question;
-  $("question").textContent = decision.question;
+  if (!decision) {
+    box.hidden = true;
+    askedFor = null;
+    return;
+  }
+  const question = decision.question;
+  if (!question || askedFor === question) return;
+  askedFor = question;
+  $("question").textContent = question;
   const opts = $("opts");
   opts.replaceChildren();
   (decision.options || []).forEach((choice) => {
     const button = document.createElement("button");
     button.textContent = choice;
-    button.onclick = () => { box.hidden = true; post("/api/decide", { answer: choice }); };
+    button.onclick = () => { box.hidden = true; post("/api/decide", { answer: choice }).catch((error) => showTaskError(error.message)); };
     opts.append(button);
   });
   box.hidden = false;
@@ -235,24 +387,124 @@ function renderAsk(decision) {
   $("reply").focus();
 }
 
+async function startTask() {
+  const task = $("taskPrompt").value.trim();
+  const recipientRole = $("recipient").value.trim();
+  const customerName = $("customerName").value.trim();
+  const factText = $("facts").value.trim();
+  const start = $("startRoleplay");
+
+  if (!task) {
+    showTaskError("Please enter a task.");
+    return;
+  }
+  if (!recipientRole) {
+    showTaskError("Please enter a recipient role.");
+    return;
+  }
+  if (!customerName) {
+    showTaskError("Please enter your name.");
+    return;
+  }
+
+  let facts;
+  try {
+    facts = parseFacts(factText);
+  } catch (error) {
+    showTaskError(error.message);
+    return;
+  }
+
+  start.disabled = true;
+  start.textContent = "Starting…";
+  showTaskError("");
+
+  try {
+    const started = await post(
+      "/api/start_task",
+      {
+        task,
+        recipient_role: recipientRole,
+        customer_name: customerName,
+        facts,
+        record: $("record").checked,
+      },
+      false
+    );
+    callId = started.call_id || null;
+    cursor = 0;
+    seen.clear();
+    feed.replaceChildren();
+    await tick();
+  } catch (error) {
+    showTaskError(error.message);
+  }
+
+  start.disabled = false;
+  start.textContent = "Start role-play";
+}
+
 function send() {
   const field = $("reply");
   const text = field.value.trim();
   if (!text || !callId) return;
   field.value = "";
-  post(askedFor ? "/api/decide" : "/api/guidance", askedFor ? { answer: text } : { text });
+  const target = askedFor ? "/api/decide" : "/api/guidance";
+  const payload = askedFor ? { answer: text } : { text };
+  post(target, payload).catch((error) => showTaskError(error.message));
   $("ask").hidden = true;
 }
+
+function remember() {
+  const field = $("reply");
+  const text = field.value.trim();
+  if (!text) return;
+  field.value = "";
+  post("/api/memory", { text }, false)
+    .then((saved) => showTaskError("Remembered. " + (saved.records || 0) + " facts stored."))
+    .catch((error) => showTaskError(error.message));
+}
+
+$("startRoleplay").onclick = startTask;
+$("remember").onclick = remember;
 $("send").onclick = send;
 $("reply").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
-$("end").onclick = () => { $("end").disabled = true; post("/api/hangup", {}); };
+$("end").onclick = () => { $("end").disabled = true; post("/api/hangup", {}).catch((error) => showTaskError(error.message)); };
 
 async function tick() {
   let state;
   try { state = await (await fetch("/api/state?after=" + cursor)).json(); }
   catch (e) { return; }                       // the service may be restarting
-  if (!state.call_id) return;
-  if (state.call_id !== callId) { callId = state.call_id; cursor = 0; seen.clear(); feed.replaceChildren(); }
+  if (!state.call_id) {
+    callId = null;
+    cursor = 0;
+    seen.clear();
+    renderNoCall();
+    return;
+  }
+  if (!state.live) {
+    setTaskMode(false);
+  } else {
+    setTaskMode(true);
+  }
+  if (!state.live && callId && callId !== state.call_id) {
+    cursor = 0;
+    seen.clear();
+    feed.replaceChildren();
+    $("ask").hidden = true;
+    askedFor = null;
+  }
+  if (state.call_id !== callId && state.live) {
+    callId = state.call_id;
+    cursor = 0;
+    seen.clear();
+    feed.replaceChildren();
+    $("ask").hidden = true;
+    askedFor = null;
+  }
+  if (state.call_id === callId && state.live) {
+    $("taskCard").hidden = true;
+  }
 
   const head = state.header || {};
   $("company").textContent = head.company || "Call";
@@ -275,12 +527,16 @@ async function tick() {
   $("latency").textContent = state.last_latency != null ? state.last_latency.toFixed(2) + "s reply" : "";
   $("end").disabled = !state.can_control;
   $("end").textContent = head.mode === "roleplay" ? "Stop test" : "End call";
-  $("reply").disabled = !state.can_control;
+  if (!live) {
+    $("taskCard").hidden = false;
+    setTaskMode(false);
+  }
 
   (state.events || []).forEach(bubble);
   cursor = state.cursor;
   renderAsk(state.decision);
 }
+renderNoCall();
 tick();
 setInterval(tick, 400);
 </script>
@@ -327,6 +583,62 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._json({"error": "Malformed request."}, 400)
             return
+        if route == "/api/start_task":
+            task = payload.get("task", "")
+            recipient_role = payload.get("recipient_role", "")
+            customer_name = payload.get("customer_name", "")
+            facts = payload.get("facts", {})
+            if not isinstance(task, str) or not task.strip():
+                self._json({"error": "Task is required."}, 400)
+                return
+            if not isinstance(recipient_role, str) or not recipient_role.strip():
+                self._json({"error": "recipient_role is required."}, 400)
+                return
+            if not isinstance(customer_name, str) or not customer_name.strip():
+                self._json({"error": "customer_name is required."}, 400)
+                return
+            if not isinstance(facts, dict):
+                self._json({"error": "facts must be a JSON object."}, 400)
+                return
+            try:
+                plan = request(
+                    "roleplay_from_task",
+                    task=task.strip(),
+                    recipient_role=recipient_role.strip(),
+                    customer_name=customer_name.strip(),
+                    facts={str(k): str(v) for k, v in facts.items() if k},
+                )
+            except (RuntimeError, ValueError) as exc:
+                self._json({"error": str(exc)[:300]}, 400)
+                return
+            call_id = plan.get("call_id")
+            plan_id = plan.get("plan_id")
+            if not isinstance(call_id, str) or not isinstance(plan_id, str):
+                self._json({"error": "Could not prepare the scenario."}, 500)
+                return
+            try:
+                started = request(
+                    "test_start",
+                    call_id=call_id,
+                    plan_id=plan_id,
+                    record=bool(payload.get("record", True)),
+                    audio_mode="speakers",
+                    controller="local",
+                )
+            except (RuntimeError, ValueError) as exc:
+                self._json({"error": str(exc)[:300]}, 400)
+                return
+            self._json(started)
+            return
+
+        if route == "/api/memory":
+            text = payload.get("text", "")
+            if not isinstance(text, str) or not text.strip():
+                self._json({"error": "Nothing to remember."}, 400)
+                return
+            self._call("memory_add", text=text, kind="fact", source="live view")
+            return
+
         call_id = payload.get("call_id")
         if not isinstance(call_id, str):
             self._json({"error": "No call selected."}, 400)

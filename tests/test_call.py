@@ -195,10 +195,10 @@ def test_live_call_dials_talks_consents_hangs_up_and_restores(live_engine):
     assert FakeRouting.instances[-1].applied
     # Nobody spoke within the greeting window, so the opening is delivered.
     until(lambda: engine.speech.spoken and engine.speech.spoken[-1] == call.plan.opening)
-    assert not call.recording
+    # recording defaults to "on", so audio is already being retained by this point
+    assert call.recording
     call.event("remote", "Sure, you can record. How can I help?", speech_end_at=call.elapsed())
-    until(lambda: call.recording)
-    assert "return the grinder" in engine.speech.spoken[-2]
+    until(lambda: any("return the grinder" in line for line in engine.speech.spoken))
     confirmation = call.event("remote", "The return is confirmed, case 4821.")
     until(lambda: call.phase == "ended")
     assert phone.hangups == 1 and not phone.in_call
@@ -464,3 +464,89 @@ def test_guidance_is_bounded_and_decide_needs_a_pending_question(live_engine):
         engine.decide(call.id, "Yes")
     engine.hangup(call.id)
     until(lambda: call.phase == "ended")
+
+
+class LookupBrain(Brain):
+    """Asks memory for the fact it lacks, then answers from what came back."""
+
+    def __init__(self, query="delivery date for the coffee grinder"):
+        super().__init__([])
+        self.query = query
+        self.saw_memory = []
+
+    def respond(self, plan, events, cancel, on_sentence=None, nudge=None, avoid_ack=""):
+        found = [e for e in events if e["speaker"] == "memory"]
+        self.saw_memory.append(len(found))
+        if not found:
+            reply = Reply(
+                say="One moment, let me check that.", status="continue", lookup=self.query
+            )
+        else:
+            reply = Reply(say=f"Our records show {found[-1]['text']}", status="needs_user")
+        if on_sentence and reply.say:
+            on_sentence(reply.say)
+        return reply, {"generation_seconds": 0.01}
+
+
+def test_agent_looks_up_a_fact_it_lacks_and_answers_from_memory(live_engine):
+    engine, _phone = live_engine
+    engine.memory.add("The coffee grinder was delivered on 3 September 2026.")
+    engine.brain = LookupBrain()
+    started = engine.call_start(live_plan(), mode="live", authorized=True)
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    until(lambda: engine.speech.spoken)
+
+    call.event("remote", "When was it delivered?", speech_end_at=call.elapsed())
+    until(lambda: any(e["speaker"] == "memory" for e in call.events))
+
+    looked = next(e for e in call.events if e["speaker"] == "memory")
+    assert looked["query"] == "delivery date for the coffee grinder"
+    # The plan's own facts are in memory too, so more than one row can match.
+    assert looked["hits"] >= 1
+    assert looked["text"].startswith("The coffee grinder was delivered on 3 September 2026.")
+    assert looked["lookup_seconds"] < 0.05  # it runs inside a live turn
+
+    # The lookup drives a follow-up turn without the other side speaking again.
+    until(lambda: any("3 September 2026" in line for line in engine.speech.spoken))
+    assert engine.brain.saw_memory == [0, 1]
+    until(lambda: call.phase == "ended")
+
+
+def test_a_lookup_that_finds_nothing_says_so_and_never_repeats(live_engine):
+    engine, _phone = live_engine
+    # Nothing stored anywhere mentions a date of birth.
+    engine.brain = LookupBrain("the account holder's date of birth")
+    started = engine.call_start(live_plan(), mode="live", authorized=True)
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    until(lambda: engine.speech.spoken)
+
+    call.event("remote", "What is the date of birth on the account?")
+    until(lambda: any(e["speaker"] == "memory" for e in call.events))
+    looked = next(e for e in call.events if e["speaker"] == "memory")
+    assert looked["hits"] == 0 and looked["text"] == "Memory has nothing on that."
+
+    until(lambda: call.phase == "ended")
+    # One question, one lookup: a miss must not loop.
+    assert sum(1 for e in call.events if e["speaker"] == "memory") == 1
+
+
+def test_a_real_call_teaches_memory_and_a_demo_never_does(live_engine):
+    engine, _phone = live_engine
+    engine.brain = Brain([("Thanks, goodbye.", "needs_user", "unknown", "")])
+    started = engine.call_start(live_plan(), mode="live", authorized=True)
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    # The plan's own facts are searchable for the next call.
+    assert engine.memory.search("order id")[0]["text"].endswith("112-3344.")
+    call.event("remote", "We cannot help today.")
+    until(lambda: call.phase == "ended")
+    assert engine.memory.search("Amazon US call outcome")
+
+    before = len(engine.memory.records)
+    demo = amazon_plan(
+        "return", "Alex Demo", "DEMO-1", "grinder", "Damaged.", "+12025550123", "x", is_demo=True
+    )
+    engine.prepare(demo.model_dump(), "demo")
+    assert len(engine.memory.records) == before, "demo facts must never enter memory"

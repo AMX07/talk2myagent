@@ -30,6 +30,8 @@ class Settings(BaseModel):
     conversation_timeout_seconds: float = Field(default=20, ge=2, le=60)
     conversation_silence_seconds: float = Field(default=30, ge=5, le=120)
     decision_timeout_seconds: float = Field(default=150, ge=15, le=600)
+    memory_results: int = Field(default=3, ge=1, le=10)
+    memory_learn: bool = True
     max_call_seconds: int = Field(default=900, ge=30, le=3600)
     idle_seconds: int = Field(default=120, ge=30, le=600)
 

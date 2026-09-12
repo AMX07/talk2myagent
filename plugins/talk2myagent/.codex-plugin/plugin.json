@@ -1,6 +1,6 @@
 {
   "name": "talk2myagent",
-  "version": "0.1.0+codex.20260911222544",
+  "version": "0.1.0+codex.20260912013042",
   "description": "Local phone calls and human voice role-play tests, with a single Codex agent, speech models, recordings and transcripts.",
   "author": {
     "name": "Local developer"

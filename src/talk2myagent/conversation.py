@@ -32,11 +32,15 @@ class Reply(BaseModel):
     keys: str = Field(default="", pattern=r"^[0-9*#]{0,16}$")
     question: str = Field(default="", max_length=300)
     options: list[str] = Field(default_factory=list, max_length=4)
+    lookup: str = Field(default="", max_length=200)
 
     @model_validator(mode="after")
     def _has_content(self):
         if not self.say.strip() and not self.keys and not self.ack.strip():
             raise ValueError("A reply needs words to say or keys to press.")
+        if self.lookup.strip() and self.status != "continue":
+            # You cannot finish a call on a question you have not answered yet.
+            self.status = "continue"
         if self.ack.strip() and self.ack.strip() not in ACKS:
             self.ack = ""
         return self
@@ -75,22 +79,31 @@ Rules:
   and you carry on from their answer.
 - Messages marked customer_instruction come from the customer you are calling for. They
   are authoritative and override the plan's defaults. Act on the latest one.
+- If they ask for something your facts do not contain, you may search the customer's
+  memory before you answer. Put what you need in "lookup", worded as the fact itself
+  ("delivery date for the coffee grinder", "account email", "what was promised on the
+  last call"), put a short holding line in "say" such as "One moment, let me check that."
+  and keep status "continue". The result arrives as memory_result and you answer on your
+  next turn. Look up once per question: if memory_result says it has nothing, tell them
+  you do not have that detail. Never guess at what memory might have said.
+- Messages marked memory_result are the customer's own records. Facts from them are yours
+  to state, exactly as written.
 - Automated phone menus: answer their spoken questions briefly (say "representative" or
   "agent" when offered, or describe the need in a few words). When a menu says to press a
   key, put the digits in "keys" and keep "say" empty. Never guess digits that were not
   offered. If asked for a phone number or order number you do not have, say "I don't have
   it" or press the option for other help.
-- Recording: the plan's opening asks permission to record and transcribe. When the other
-  side clearly agrees, set consent to "granted"; if they refuse, set "declined" and do not
-  ask again. Otherwise leave "unknown". A company's own "this call may be recorded" notice
-  is not their consent to your recording.
+- Recording: this workspace records by default unless the call is configured as recording=off.
+  If the other side explicitly states consent, set consent to "granted". If they refuse,
+  set "declined" and do not ask again. Otherwise leave "unknown". A company's own
+  "this call may be recorded" notice is not their consent to your recording.
 - If you have not spoken yet, your first reply must deliver the OPENING below, adapted to
   what you just heard (a human greeting gets the full opening; a menu gets a short answer).
 
 Never read the plan aloud. success_criteria, allowed_actions and stop_conditions are your
 private checklist, not speech; saying them to the other side is always wrong. Never say
-you are the customer: you are their assistant, so "This is Ansh" is wrong and "I'm an AI
-assistant calling for Ansh" is right.
+you are the customer: you are their assistant, so "This is Ansh" is wrong and
+"Hi, this is Ansh's personal assistant" is right.
 
 Style: one or two short sentences, under 40 words, natural and polite. Ask at most one or
 two related questions per turn. Do not repeat back what they just said; confirm at most one
@@ -105,8 +118,9 @@ Any reply that asks a question or requests something must use "continue" so you 
 answer. Never combine a request with resolved.
 
 Return ONLY this JSON object, nothing else, with "ack" first and "say" second:
-{"ack":"Sure.","say":"Exact words to speak","status":"continue|resolved|needs_user","evidence_seq":[],"consent":"unknown|granted|declined","keys":"","question":"","options":[]}
+{"ack":"Sure.","say":"Exact words to speak","status":"continue|resolved|needs_user","evidence_seq":[],"consent":"unknown|granted|declined","keys":"","question":"","options":[],"lookup":""}
 "question" and "options" are only for a decision that belongs to the customer.
+"lookup" is only for a fact you do not have and they are waiting on; leave it "" otherwise.
 "ack" is spoken first, immediately: exactly one of "Sure.", "Okay.", "Thanks.", "Got it.",
 "Understood.", "One moment.", "Alright.", or "" for a phone menu or a goodbye.
 evidence_seq holds INTEGER recipient event IDs such as [2, 4] that support a resolved
@@ -134,6 +148,15 @@ def messages_for(plan: CallPlan, events: list[dict], nudge: str | None = None) -
             result.append(
                 {"role": "system", "content": json.dumps({"customer_instruction": event["text"]})}
             )
+        elif event["speaker"] == "memory":
+            result.append(
+                {
+                    "role": "system",
+                    "content": json.dumps(
+                        {"memory_result": event["text"], "looked_up": event.get("query", "")}
+                    ),
+                }
+            )
         elif event["speaker"] == "agent":
             keys = re.fullmatch(r"\[DTMF ([0-9*#]+)\]", event["text"])
             if keys:
@@ -157,7 +180,10 @@ def messages_for(plan: CallPlan, events: list[dict], nudge: str | None = None) -
             "content": (
                 f"Now answer the other side AS THE CALLER acting for {plan.customer_name}. "
                 "Check the plan for outstanding confirmations. A first refusal warrants asking "
-                "why or requesting supervisor review. Return only the JSON object."
+                "why or requesting supervisor review. If they asked for a detail your facts do "
+                'not contain, you must put it in "lookup" this turn: saying you will check '
+                'without setting "lookup" leaves them waiting on nothing. Never state a '
+                "detail you have not been given. Return only the JSON object."
                 + (" " + nudge if nudge else "")
             ),
         }
@@ -242,6 +268,15 @@ class SayStream:
         return out
 
 
+# "Let me check that" is the model announcing a lookup in prose. Models below a
+# certain size say it and forget the field, so the intent is honoured either way.
+CHECKING = re.compile(
+    r"(?i)\b(let me (just )?(check|look|see|confirm|find|pull)"
+    r"|i'?ll (check|look|confirm|find)"
+    r"|checking (on )?that"
+    r"|bear with me"
+    r"|looking (that|it) up)"
+)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 DIGIT_RUN = re.compile(r"\d[\d,\-\s.]{1,}\d")
 DATE = re.compile(
@@ -476,7 +511,9 @@ class LocalConversation:
         allowed = (
             json.dumps(plan.model_dump())
             + " "
-            + " ".join(e["text"] for e in events if e["speaker"] in {"remote", "agent"})
+            + " ".join(
+                e["text"] for e in events if e["speaker"] in {"remote", "agent", "memory", "owner"}
+            )
         )
         spoken: list[str] = []
         blocked: list[str] = []
@@ -555,6 +592,18 @@ class LocalConversation:
             raise ValueError("Local model cited nonexistent recipient evidence.")
         if reply.status == "resolved" and not reply.evidence_seq:
             raise ValueError("Local model proposed success without recipient evidence.")
+        if (
+            not reply.lookup
+            and not reply.question
+            and reply.status == "continue"
+            and CHECKING.search(reply.say)
+        ):
+            # It said it would check but named nothing to check. Use their own
+            # question as the query rather than leaving them on a dead promise.
+            asked = next((e["text"] for e in reversed(events) if e["speaker"] == "remote"), "")
+            if asked:
+                reply.lookup = asked[:200]
+                metrics["lookup_from"] = "check_phrase"
         metrics["ack"] = stream.used_ack if on_sentence else ""
         metrics["first_sentence_seconds"] = round(
             first_sentence or metrics["generation_seconds"], 3
@@ -574,7 +623,7 @@ class LocalConversation:
         """Draft a CallPlan locally; the user reviews it before any call."""
         schema = {
             "objective": "one sentence, measurable",
-            "opening": "the first spoken sentence: an AI assistant calling on behalf of NAME, the purpose, and a request to record and transcribe the call",
+            "opening": "the first spoken sentence: Hi, this is Ansh's personal assistant, calling in regards to the purpose of the call. Include a concise purpose statement and never request recording permission.",
             "dialogue": {
                 "person_answers": "what to say once a person picks up",
                 "asked_for_details": "what to say when they ask for the order or account",
@@ -717,6 +766,8 @@ class ConversationWorker(threading.Thread):
         cursor = 0
         last_turn = time.monotonic()
         silence_prompted = False
+        # One memory lookup per question they ask, so a miss cannot loop.
+        last_lookup_seq: int | None = None
         previous_say = ""
         previous_ack = ""
         repeats = 0
@@ -832,6 +883,14 @@ class ConversationWorker(threading.Thread):
                     repeats = 0
                 previous_say = _normal(reply.say)
                 interrupted = bool(event and event.get("interrupted"))
+                if reply.lookup and not interrupted and last_lookup_seq != latest_seq:
+                    # They asked for something the plan does not carry. Check the
+                    # customer's own records, then answer on the next turn.
+                    last_lookup_seq = latest_seq
+                    self.engine.memory_lookup(call, reply.lookup)
+                    last_turn, silence_prompted = time.monotonic(), False
+                    previous_say, repeats = "", 0
+                    continue
                 if reply.status == "needs_user" and reply.question and not interrupted:
                     # The customer's own decision. Hold the line and ask them on screen.
                     answer = self.engine.ask_owner(call, reply.question, reply.options)

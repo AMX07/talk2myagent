@@ -16,7 +16,9 @@ import soundfile as sf
 
 from .audio import AudioBridge, Monitor, devices, dtmf, human_devices
 from .config import ROOT, Settings, private_dir, write_json
-from .plans import CallPlan, CriterionCheck, TestScenario
+from .memory import Memory, summarize, timed_search
+from .memory import shared as shared_memory
+from .plans import CallPlan, CriterionCheck, TestScenario, sanitize_opening_text
 from .speech import Speech, resample
 
 
@@ -239,7 +241,9 @@ class Engine:
         phone=None,
     ):
         self.config = config or Settings()
-        self.root = private_dir((root or ROOT) / "runs")
+        self.base_root = root or ROOT
+        self.root = private_dir(self.base_root / "runs")
+        self._memory: Memory | None = None
         self.speech = speech or Speech(self.config)
         self.sessions: dict[str, Session] = {}
         self.lock = threading.RLock()
@@ -398,6 +402,7 @@ class Engine:
             call = Session(folder, plan_obj, mode)
             self.sessions[call_id] = call
             call.event("system", "Plan prepared; no phone call placed.")
+            self._learn(call)
             return {
                 "call_id": call_id,
                 "plan_id": plan_obj.fingerprint(),
@@ -433,7 +438,7 @@ class Engine:
         plan: dict,
         mode: Literal["live", "demo"] = "live",
         authorized: bool = False,
-        recording: Literal["ask", "off"] = "ask",
+        recording: Literal["ask", "off", "on"] = "on",
         monitor: bool = True,
         recipient_brief: str | None = None,
         play: bool = False,
@@ -522,6 +527,69 @@ class Engine:
                         "timed_out": not new and not terminal,
                     }
                 call.condition.wait(timeout=min(0.5, max(0, deadline - time.monotonic())))
+
+    @property
+    def memory(self) -> Memory:
+        if self._memory is None:
+            self._memory = shared_memory(self.base_root)
+        return self._memory
+
+    def memory_add(
+        self,
+        text: str,
+        kind: str = "fact",
+        source: str = "note",
+        tags: list[str] | None = None,
+    ) -> dict:
+        """Teach the agent something it can look up on a later call."""
+        record = self.memory.add(text, kind, source, tags)
+        return {"record": record.as_dict(), **self.memory.stats()}
+
+    def memory_search(self, query: str, limit: int = 5) -> dict:
+        results, seconds = timed_search(self.memory, query, limit)
+        return {"query": query, "results": results, "seconds": seconds, **self.memory.stats()}
+
+    def memory_recent(self, limit: int = 20) -> dict:
+        return {"records": self.memory.recent(limit), **self.memory.stats()}
+
+    def memory_forget(self, record_id: str) -> dict:
+        return {"forgotten": self.memory.forget(record_id), **self.memory.stats()}
+
+    def memory_lookup(self, call: Session, query: str) -> dict:
+        """An in-call lookup: log what was asked and what came back, then take a turn."""
+        results, seconds = timed_search(self.memory, query, self.config.memory_results)
+        call.event(
+            "memory",
+            summarize(results),
+            kind="memory",
+            query=query,
+            hits=len(results),
+            lookup_seconds=seconds,
+            sources=[r["source"] for r in results],
+        )
+        # The answer is in context now, so respond without waiting for them to speak again.
+        call.guidance.set()
+        with call.condition:
+            call.condition.notify_all()
+        return {"query": query, "results": results, "seconds": seconds}
+
+    def _learn(self, call: Session, result: dict | None = None) -> None:
+        """Keep what a real call established; demo facts never enter memory."""
+        if not self.config.memory_learn or call.mode == "demo" or call.plan.is_demo:
+            return
+        try:
+            if result is None:
+                self.memory.add_facts(call.plan.facts, source=f"plan {call.id}")
+            else:
+                self.memory.add_call(
+                    {
+                        **result,
+                        "created_at": call.created_at,
+                        "plan": call.plan.model_dump(),
+                    }
+                )
+        except (ValueError, OSError) as exc:  # memory must never take down a call
+            call.error(f"Memory write skipped: {exc}")
 
     def guidance(self, call_id: str, text: str) -> dict:
         """The customer types an instruction on the live view while the call runs."""
@@ -657,7 +725,7 @@ class Engine:
         call.connected_at = time.monotonic()
         call.event(
             "system",
-            "Phone call connected; local audio session active. Recording is off until consent.",
+            "Phone call connected; local audio session active.",
         )
         call.save()
 
@@ -682,13 +750,16 @@ class Engine:
         return info
 
     def consent_observed(self, call: Session, verdict: str, seq: int) -> None:
+        mode = call.options.get("recording", "on")
         if verdict == "granted" and call.mode == "live" and call.record_started is None:
-            if call.options.get("recording", "ask") == "off":
+            if mode == "off":
                 call.event("system", "Recording consent noted, but audio retention is disabled.")
                 return
-            self.recording_start(
-                call.id, f"The other side agreed to recording and transcription (event {seq})."
-            )
+            if mode == "ask":
+                self.recording_start(
+                    call.id,
+                    f"The other side agreed to recording and transcription (event {seq}).",
+                )
         elif verdict == "declined":
             call.event("system", f"Recording declined by the other side (event {seq}).")
 
@@ -724,9 +795,13 @@ class Engine:
         }
 
     def test_prepare(self, scenario: dict) -> dict:
-        parsed = TestScenario.model_validate(scenario)
+        parsed = TestScenario.model_validate(
+            {**scenario, "greeting": sanitize_opening_text(scenario["greeting"])}
+        )
         with self.lock:
-            prepared = self.prepare(parsed.call_plan().model_dump(), "roleplay")
+            plan = parsed.call_plan().model_dump()
+            plan["opening"] = sanitize_opening_text(plan["opening"])
+            prepared = self.prepare(plan, "roleplay")
             call = self.get(prepared["call_id"])
             call.scenario = parsed.model_dump()
             call.event(
@@ -759,6 +834,8 @@ class Engine:
             recipient_role,
             facts or {},
         )
+        if "record" in drafted.opening.lower() and "transcrib" in drafted.opening.lower():
+            drafted = drafted.model_copy(update={"opening": sanitize_opening_text(drafted.opening)})
         return self.test_prepare(
             {
                 "user_request": task,
@@ -876,9 +953,15 @@ class Engine:
                 raise ValueError(
                     "Autonomous conversation requires a human role-play or connected call."
                 )
-            if call.mode == "live" and not call.recording:
+            recording_mode = call.options.get("recording", "on")
+            if call.mode == "live" and recording_mode == "ask" and not call.recording:
                 raise ValueError(
                     "Obtain recording consent and start recording before live delegation."
+                )
+            if call.mode == "live" and recording_mode == "on" and not call.recording:
+                self.recording_start(
+                    call.id,
+                    "Live call recording is enabled by default for this call.",
                 )
             if call.conversation_worker is not None:
                 raise ValueError("Conversation already delegated; do not start a duplicate worker.")
@@ -1408,6 +1491,7 @@ class Engine:
         )
         write_json(call.folder / "result.json", result)
         self._report(call, result)
+        self._learn(call, result)
 
     def result(self, call_id: str) -> dict:
         if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{8}", call_id):
@@ -1620,6 +1704,8 @@ class CallRunner(threading.Thread):
                 raise PhoneControlError(f"Call did not connect ({connected.get('reason')}).")
             call.set_phase("talking")
             engine._connect_live(call, call.options.get("monitor", True))
+            if call.options.get("recording", "on") == "on":
+                engine.recording_start(call.id, "Live call recording is enabled by default.")
             worker = ConversationWorker(
                 engine, call, engine.brain, opening_wait=config.greeting_wait_seconds
             )

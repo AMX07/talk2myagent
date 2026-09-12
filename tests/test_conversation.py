@@ -304,3 +304,105 @@ def test_an_acknowledgment_is_never_doubled_or_repeated_next_turn(scenario):
     )
     assert spoken == ["The ticket is B-42."] and metrics["ack"] == ""
     assert reply.say == "The ticket is B-42."
+
+
+def _canned_brain(canned):
+    import threading as t
+
+    from talk2myagent.config import Settings
+    from talk2myagent.conversation import LocalConversation
+
+    brain = LocalConversation(Settings(), t.Lock())
+    brain._generate = lambda messages, cancel, on_text=None, max_tokens=None: (
+        canned,
+        {"generation_seconds": 0.1},
+    )
+    return brain
+
+
+def test_a_date_from_memory_is_speakable_but_an_invented_one_is_not(scenario):
+    import threading as t
+
+    from talk2myagent.conversation import FALLBACK
+
+    canned = '{"ack":"","say":"It was delivered on 3 September 2026.","status":"continue","evidence_seq":[]}'
+    asked = [
+        {"seq": 1, "speaker": "agent", "text": "One moment, let me check that."},
+        {"seq": 2, "speaker": "remote", "text": "When was it delivered?"},
+    ]
+    remembered = {
+        "seq": 3,
+        "speaker": "memory",
+        "text": "The coffee grinder was delivered on 3 September 2026.",
+        "query": "delivery date",
+    }
+
+    # With the lookup in context the date is the customer's own record, so it is said.
+    reply, metrics = _canned_brain(canned).respond(
+        scenario.call_plan(), [*asked, remembered], t.Event()
+    )
+    assert reply.say == "It was delivered on 3 September 2026."
+    assert "blocked_details" not in metrics
+
+    # Without it, the same sentence is the model inventing a date, and is blocked.
+    reply, metrics = _canned_brain(canned).respond(scenario.call_plan(), asked, t.Event())
+    assert reply.say == FALLBACK
+    # The date matcher and the digit-run matcher can both fire on one span, so the
+    # report lists fragments; what matters is that the sentence never got spoken.
+    assert any("2026" in detail for detail in metrics["blocked_details"])
+
+
+def test_a_lookup_cannot_be_used_to_end_the_call(scenario):
+    import threading as t
+
+    canned = (
+        '{"ack":"","say":"One moment.","status":"resolved","evidence_seq":[2],'
+        '"lookup":"the delivery date"}'
+    )
+    events = [{"seq": 2, "speaker": "remote", "text": "When was it delivered?"}]
+    reply, _ = _canned_brain(canned).respond(scenario.call_plan(), events, t.Event())
+    # You cannot declare success on a question you have not answered yet.
+    assert reply.lookup == "the delivery date" and reply.status == "continue"
+
+
+def test_memory_results_reach_the_model_as_their_own_kind_of_message(scenario):
+    from talk2myagent.conversation import messages_for
+
+    messages = messages_for(
+        scenario.call_plan(),
+        [
+            {"seq": 2, "speaker": "remote", "text": "When was it delivered?"},
+            {"seq": 3, "speaker": "memory", "text": "Delivered 3 September.", "query": "delivery"},
+        ],
+    )
+    # The instructions mention memory_result too; take the payload, not the rules.
+    memory_message = next(m for m in messages if m["content"].startswith('{"memory_result"'))
+    assert memory_message["role"] == "system"
+    assert '"looked_up": "delivery"' in memory_message["content"]
+
+
+def test_saying_it_will_check_without_naming_a_lookup_still_searches(scenario):
+    import threading as t
+
+    canned = (
+        '{"ack":"Sure.","say":"Let me check that for you.","status":"continue","evidence_seq":[]}'
+    )
+    events = [{"seq": 2, "speaker": "remote", "text": "What is the delivery date on that order?"}]
+    reply, metrics = _canned_brain(canned).respond(scenario.call_plan(), events, t.Event())
+    # Smaller models announce the check and forget the field; the intent still counts.
+    assert reply.lookup == "What is the delivery date on that order?"
+    assert metrics["lookup_from"] == "check_phrase"
+
+
+def test_checking_with_the_customer_is_a_decision_not_a_memory_lookup(scenario):
+    import threading as t
+
+    canned = (
+        '{"ack":"","say":"Let me check that with him, could you hold?","status":"needs_user",'
+        '"evidence_seq":[],"question":"They want a 20% fee. Accept?","options":["Yes","No"]}'
+    )
+    events = [{"seq": 2, "speaker": "remote", "text": "There is a twenty percent fee."}]
+    reply, metrics = _canned_brain(canned).respond(scenario.call_plan(), events, t.Event())
+    # A question for the customer must not be hijacked into a memory search.
+    assert reply.lookup == "" and reply.question.startswith("They want")
+    assert "lookup_from" not in metrics

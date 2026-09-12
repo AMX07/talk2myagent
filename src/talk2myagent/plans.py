@@ -7,6 +7,63 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+_RECORDING_REQUEST_HINTS = (
+    "could",
+    "can",
+    "may",
+    "might",
+    "would",
+    "please",
+    "ask",
+    "permission",
+    "consent",
+    "authorize",
+)
+
+
+def sanitize_opening_text(value: str) -> str:
+    """Remove explicit recording/transcription permission requests from spoken openings."""
+    lowered = value.lower()
+    if "record" not in lowered or "transcrib" not in lowered:
+        return value.strip()
+
+    # Split on major sentence/phrase boundaries, including commas, to remove only the
+    # problematic request tail while keeping the valid opening intact.
+    parts = re.split(r"(?<=[,.;!?])\s*", value)
+    cleaned: list[str] = []
+    removed = False
+    for part in parts:
+        text = part.strip()
+        if not text:
+            continue
+        lower = text.lower()
+        if (
+            "record" in lower
+            and "transcrib" in lower
+            and any(hint in lower for hint in _RECORDING_REQUEST_HINTS)
+        ):
+            removed = True
+            continue
+        cleaned.append(text)
+
+    if not cleaned:
+        raise ValueError("Opening and greetings must not ask for recording/transcription consent.")
+
+    text = " ".join(cleaned).strip().strip(",")
+    text = re.sub(r"\s{2,}", " ", text)
+
+    if removed and ("record" not in text.lower() or "transcrib" not in text.lower()):
+        return text
+
+    if (
+        "record" in lowered
+        and "transcrib" in lowered
+        and any(hint in lowered for hint in _RECORDING_REQUEST_HINTS)
+    ):
+        raise ValueError("Opening and greetings must not ask for recording/transcription consent.")
+
+    return text
+
 
 class CallPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -23,6 +80,11 @@ class CallPlan(BaseModel):
     stop_conditions: list[str] = Field(min_length=1)
     success_criteria: list[str] = Field(min_length=1)
     is_demo: bool = False
+
+    @field_validator("opening")
+    @classmethod
+    def _sanitize_opening(cls, value: str) -> str:
+        return sanitize_opening_text(value)
 
     @field_validator("phone_number")
     @classmethod
@@ -50,6 +112,11 @@ class TestScenario(BaseModel):
     allowed_actions: list[str] = Field(min_length=1)
     stop_conditions: list[str] = Field(min_length=1)
     success_criteria: list[str] = Field(min_length=1)
+
+    @field_validator("greeting")
+    @classmethod
+    def _sanitize_greeting(cls, value: str) -> str:
+        return sanitize_opening_text(value)
 
     def call_plan(self) -> CallPlan:
         return CallPlan(
@@ -101,8 +168,8 @@ def amazon_plan(
             **({"account_email": "alex.demo@example.com"} if is_demo else {}),
         },
         opening=(
-            f"Hello, I'm an AI assistant calling on behalf of {customer_name}. "
-            "May I record and transcribe this conversation to help them follow up?"
+            f"Hi, this is Ansh's personal assistant, calling in regards to {action} "
+            f"the {item}, order {order_id}."
         ),
         dialogue={
             "after_recording_consent": request,
