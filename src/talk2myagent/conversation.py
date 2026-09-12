@@ -16,33 +16,84 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import Settings
 from .plans import CallPlan
 
+LIMITS = {"ack": 120, "say": 400, "question": 300, "lookup": 200}
+
 
 class Reply(BaseModel):
+    """One spoken turn, coerced rather than rejected.
+
+    A rejected reply raises, and a raise mid-call ends the call: the agent goes
+    silent on a live line because a model wrote "" where a list belonged, or a
+    whole sentence where a one-word acknowledgment belonged. Salvaging the turn
+    is always better than dropping it.
+    """
+
     model_config = ConfigDict(extra="forbid")
-    ack: str = Field(default="", max_length=20)
-    say: str = Field(default="", max_length=400)
+    ack: str = ""
+    say: str = ""
     status: Literal["continue", "resolved", "needs_user"] = "continue"
     evidence_seq: list[int] = Field(default_factory=list)
     consent: Literal["unknown", "granted", "declined"] = "unknown"
-    keys: str = Field(default="", pattern=r"^[0-9*#]{0,16}$")
-    question: str = Field(default="", max_length=300)
-    options: list[str] = Field(default_factory=list, max_length=4)
-    lookup: str = Field(default="", max_length=200)
+    keys: str = ""
+    question: str = ""
+    options: list[str] = Field(default_factory=list)
+    lookup: str = ""
+
+    @field_validator("ack", "say", "question", "lookup", "keys", mode="before")
+    @classmethod
+    def _as_text(cls, value):
+        return "" if value is None else value if isinstance(value, str) else str(value)
+
+    @field_validator("evidence_seq", mode="before")
+    @classmethod
+    def _as_numbers(cls, value):
+        """Models cite "event 2" as readily as they cite 2."""
+        if isinstance(value, str):
+            return [int(n) for n in re.findall(r"\d+", value)]
+        if isinstance(value, list):
+            out: list[int] = []
+            for item in value:
+                if isinstance(item, bool):
+                    continue
+                if isinstance(item, int):
+                    out.append(item)
+                elif isinstance(item, str):
+                    out.extend(int(n) for n in re.findall(r"\d+", item))
+            return out
+        return value
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def _empty_means_empty(cls, value):
+        """Models write "" or "none" for an empty list; that is not a failed turn."""
+        if isinstance(value, str):
+            text = value.strip()
+            if not text or text.lower() in {"none", "null", "n/a", "[]"}:
+                return []
+            return [piece.strip() for piece in text.split(",") if piece.strip()]
+        return value
 
     @model_validator(mode="after")
-    def _has_content(self):
-        if not self.say.strip() and not self.keys and not self.ack.strip():
-            raise ValueError("A reply needs words to say or keys to press.")
-        if self.lookup.strip() and self.status != "continue":
+    def _tidy(self):
+        for name, limit in LIMITS.items():
+            setattr(self, name, getattr(self, name).strip()[:limit])
+        self.options = [str(o).strip() for o in self.options if str(o).strip()][:4]
+        # These digits get pressed on a real phone, so anything unexpected is dropped.
+        self.keys = self.keys if re.fullmatch(r"[0-9*#]{1,16}", self.keys) else ""
+        if self.ack and self.ack not in ACKS:
+            # A whole sentence where a one-word acknowledgment belongs: still say it.
+            self.say = f"{self.ack} {self.say}".strip()
+            self.ack = ""
+        if self.lookup and self.status != "continue":
             # You cannot finish a call on a question you have not answered yet.
             self.status = "continue"
-        if self.ack.strip() and self.ack.strip() not in ACKS:
-            self.ack = ""
+        if not self.say and not self.keys and not self.ack:
+            raise ValueError("A reply needs words to say or keys to press.")
         return self
 
     @property

@@ -6,7 +6,7 @@ one of them decides anything:
 | Role | Default | Runtime | Swappable by |
 |---|---|---|---|
 | Hears the other side | `mlx-community/whisper-large-v3-turbo` | MLX | `stt_model` |
-| Decides every word | `Qwen/Qwen3-8B-MLX-4bit` | mlx-lm | `conversation_model` |
+| Decides every word | `lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit` | mlx-lm | `conversation_model` |
 | Speaks | Kokoro 82M, voice `af_heart` | ONNX Runtime | `voice` |
 | Detects end of turn | Silero VAD | ONNX Runtime | `vad_backend` |
 
@@ -83,3 +83,47 @@ backend implementing `ready`, `prepare`, `respond` and `persona_reply` against
 that API would drop in, and the sentence streamer needs no changes because it
 only consumes growing text. The explicit prompt-prefix cache would be lost,
 though LM Studio does its own prompt caching. This is not implemented.
+
+
+## Measured on identical call turns
+
+Three models through the same six turns from `examples/roleplay-amazon-return.json`,
+including two that only memory can answer. Run it yourself:
+
+```sh
+uv run python scripts/compare_models.py \
+  Qwen/Qwen3-8B-MLX-4bit \
+  lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit \
+  lmstudio-community/gemma-4-31B-it-MLX-4bit
+```
+
+| Model | First sentence | Prefill per call | Invented details |
+|---|---|---|---|
+| Qwen3 8B | 0.29 s | 0.57 s | 0 |
+| **Gemma 4 26B A4B (MoE)** | **0.43 s** | **0.54 s** | 0 |
+| Gemma 4 31B | 1.18 s | 2.68 s | 0 |
+
+First sentence is what the caller waits on. The agent starts speaking as soon as
+one sentence can be parsed out of the streaming JSON and generates the rest
+while its own voice plays, so total generation time is not what you feel.
+
+The mixture-of-experts model is the default because it is the only one that is
+both fast and sound. It holds 26B parameters but activates about 4B per token,
+which is why it costs roughly Qwen's latency while behaving like the 31B.
+
+Speed is not what separates them. On the same turns:
+
+- **Identity.** Qwen has opened with "This is Ansh", impersonating the customer.
+  Both Gemma models say they are calling on behalf of him.
+- **Reciting the plan.** Qwen read the success criteria aloud to the
+  representative as its closing line. Neither Gemma model does this.
+- **Knowing when it is done.** Qwen declared the call resolved before getting a
+  confirmation number. Both Gemma models stayed open and asked for the return
+  instructions, the deadline and a confirmation number.
+- **Using what memory returned.** All three requested the lookup. The MoE model
+  answered with "The customer's records show it was delivered on 3 September
+  2026", which is the behaviour the whole feature exists for.
+
+Prompting did not fix the first two. Explicit prohibitions against reciting the
+plan and against claiming to be the customer were added, and the 8B model
+violated both again identically. Some failures are capability, not instruction.

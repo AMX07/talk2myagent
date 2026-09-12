@@ -9,26 +9,38 @@ facts are visible side by side. No audio, no microphone, no call.
 
 import argparse
 import json
+import tempfile
 import threading
 import time
 from pathlib import Path
 
 from talk2myagent.config import ROOT, settings
 from talk2myagent.conversation import LocalConversation, unsupported_details
+from talk2myagent.memory import Memory, summarize
 from talk2myagent.plans import TestScenario
 
 # The turns that exposed weaknesses in the live role-play, plus a policy squeeze.
 TURNS = [
     "Thanks for calling Amazon, this is Michael. Can I get your name?",
     "Before I do that, can you please confirm your date of birth and the account holder's phone number?",
+    # Only memory can answer this, so it exercises the lookup path end to end.
+    "Thanks. And what date was it delivered? I need that to check the return window.",
     "Okay, I found the order. Unfortunately I can only offer a fifty dollar gift card, not a refund.",
     "Alright, I can do the full refund to the original card. It will take five business days.",
 ]
 
+# The one fact no plan carries, phrased the way a record would be, not the way
+# the agent will say it back. That difference is the point.
+REMEMBERED = "The coffee grinder was delivered on 3 September 2026."
+
 
 def scenario_plan():
     raw = json.loads((ROOT / "examples/roleplay-amazon-return.json").read_text())
-    return TestScenario.model_validate(raw).call_plan()
+    plan = TestScenario.model_validate(raw).call_plan()
+    # The delivery date has to be absent from the plan, or the memory turn is
+    # answered from facts and never exercises a lookup at all.
+    plan.facts = {k: v for k, v in plan.facts.items() if k != "delivered"}
+    return plan
 
 
 def run(model_name: str, plan) -> dict:
@@ -43,6 +55,10 @@ def run(model_name: str, plan) -> dict:
     events = [{"seq": 1, "speaker": "agent", "text": plan.opening}]
     rows, cancel = [], threading.Event()
     allowed = json.dumps(plan.model_dump())
+    store = Memory(Path(tempfile.mkdtemp()))
+    store.add(REMEMBERED)
+    store.add_facts(plan.facts)
+    lookups = []
     for text in TURNS:
         events.append({"seq": len(events) + 1, "speaker": "remote", "text": text})
         first_sentence: list[float] = []
@@ -73,6 +89,49 @@ def run(model_name: str, plan) -> dict:
             }
         )
         events.append({"seq": len(events) + 1, "speaker": "agent", "text": spoken})
+
+        if reply.lookup:
+            # Serve the lookup exactly as the engine does, then let it answer.
+            hits = store.search(reply.lookup, 3)
+            answer = summarize(hits)
+            lookups.append({"query": reply.lookup, "found": bool(hits)})
+            events.append(
+                {
+                    "seq": len(events) + 1,
+                    "speaker": "memory",
+                    "text": answer,
+                    "query": reply.lookup,
+                }
+            )
+            first_sentence = []
+            began = time.monotonic()
+            reply, timing = brain.respond(
+                plan,
+                events,
+                cancel,
+                on_sentence=lambda _s, mark=first_sentence: mark.append(time.monotonic()),
+            )
+            spoken = reply.spoken
+            rows.append(
+                {
+                    "heard": f"[memory] {answer}",
+                    "said": spoken,
+                    "status": reply.status,
+                    "asked_customer": reply.question or None,
+                    "first_sentence_seconds": round(
+                        (first_sentence[0] - began) if first_sentence else 0, 3
+                    ),
+                    "generation_seconds": timing["generation_seconds"],
+                    "first_token_seconds": timing["first_token_seconds"],
+                    "invented": unsupported_details(
+                        spoken, allowed + " " + " ".join(TURNS) + " " + answer
+                    ),
+                    "used_memory": REMEMBERED.split(" on ")[-1].rstrip(".").lower()
+                    in spoken.lower()
+                    or "september" in spoken.lower(),
+                }
+            )
+            events.append({"seq": len(events) + 1, "speaker": "agent", "text": spoken})
     good = [r for r in rows if "said" in r]
     return {
         "model": model_name,
@@ -86,6 +145,9 @@ def run(model_name: str, plan) -> dict:
         if good
         else None,
         "invented_details": sum(len(r["invented"]) for r in good),
+        "asked_memory": len(lookups),
+        "memory_found": sum(1 for entry in lookups if entry["found"]),
+        "stated_what_memory_returned": any(r.get("used_memory") for r in good),
     }
 
 

@@ -431,3 +431,30 @@ def test_one_bad_date_is_reported_once_not_as_two_problems():
 
     # The digit matcher used to fire inside the date and report "15, 2024" too.
     assert unsupported_details("Ordered June 15, 2024.", "nothing relevant") == ["June 15, 2024"]
+
+
+def test_a_malformed_reply_is_salvaged_rather_than_ending_the_call():
+    from talk2myagent.conversation import Reply
+
+    # Each of these raised before, and a raise mid-call ends the call.
+    whole_sentence = Reply.model_validate_json('{"ack":"One moment, let me check that.","say":""}')
+    assert whole_sentence.ack == "" and whole_sentence.spoken == "One moment, let me check that."
+
+    assert Reply.model_validate_json('{"say":"hi","options":""}').options == []
+    assert Reply.model_validate_json(
+        '{"say":"hi","evidence_seq":"event 2 and 4"}'
+    ).evidence_seq == [
+        2,
+        4,
+    ]
+    # Digits get pressed on a real phone, so anything unexpected is dropped, not guessed.
+    assert Reply.model_validate_json('{"say":"hi","keys":"press 2"}').keys == ""
+    assert Reply.model_validate_json('{"say":"hi","keys":"2"}').keys == "2"
+    assert (
+        len(Reply.model_validate_json('{"say":"hi","options":["a","b","c","d","e"]}').options) == 4
+    )
+    assert len(Reply.model_validate_json('{"say":"' + "x" * 900 + '"}').say) == 400
+
+    # A reply with nothing to say and nothing to press is still a failed turn.
+    with pytest.raises(ValueError, match="words to say"):
+        Reply.model_validate_json('{"say":"","ack":"","keys":""}')
