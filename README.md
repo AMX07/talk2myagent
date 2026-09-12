@@ -29,7 +29,7 @@ host agent (Codex / OpenCode / Claude Code / you)
          ├─ routes Phone audio through BlackHole 16ch (in) and 2ch (out)
          ├─ types the number into Phone's keypad, presses Call, waits for connect
          ├─ Whisper hears → Qwen decides → Kokoro speaks, sentence by sentence
-         ├─ presses keypad digits for menus, asks recording consent, retains audio after it
+         ├─ presses menu digits, records by default, or waits for consent if asked to
          ├─ hangs up, restores your audio devices
          └─ result: transcript, recording, latency, proposal
   └─ phone_call_wait until done → phone_call_review judges the success criteria
@@ -80,7 +80,9 @@ your Phone version exposes if a control is ever not found.
   one-time code, password, or the account holder end the call as `needs_user`.
 - Emails, digit strings, and dates that are not in the plan or the transcript
   are blocked before they are spoken.
-- Audio is retained only after the other side agrees; text is always kept.
+- Audio is retained from the start of a live call by default. `recording: "ask"`
+  withholds it until the other side agrees, `"off"` keeps only the text. Use
+  "ask" where two-party consent is required.
 - `completed` requires the host to cite recipient evidence for every criterion.
 
 Docs: [memory](docs/MEMORY.md) · [the four local models](docs/MODELS.md) · [setup and live calling](docs/SETUP.md) · [hosts and tools](docs/INTERFACES.md)

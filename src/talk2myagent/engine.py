@@ -762,6 +762,16 @@ class Engine:
                 )
         elif verdict == "declined":
             call.event("system", f"Recording declined by the other side (event {seq}).")
+            # The opening asked their permission. Refusing it has to mean something,
+            # including when this call was started with recording on by default.
+            if call.recording:
+                self.recording_stop(call.id)
+                call.event(
+                    "system",
+                    "Audio retention stopped because they refused. "
+                    "The transcript continues; the recording up to this point is kept.",
+                    kind="consent",
+                )
 
     # ------------------------------------------------------- human role-play ---
 

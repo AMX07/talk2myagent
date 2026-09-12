@@ -550,3 +550,40 @@ def test_a_real_call_teaches_memory_and_a_demo_never_does(live_engine):
     )
     engine.prepare(demo.model_dump(), "demo")
     assert len(engine.memory.records) == before, "demo facts must never enter memory"
+
+
+def test_a_refusal_stops_recording_even_when_it_defaulted_on(live_engine):
+    engine, _phone = live_engine
+    engine.brain = Brain(
+        [
+            ("Understood, I won't record.", "continue", "declined", ""),
+            ("Thanks, goodbye.", "needs_user", "unknown", ""),
+        ]
+    )
+    started = engine.call_start(live_plan(), mode="live", authorized=True)
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    assert call.recording, "the default is on, so it records from the start"
+
+    call.event("remote", "No, I would rather you did not record this call.")
+    until(lambda: not call.recording)
+    stopped = [e for e in call.events if e.get("kind") == "consent"]
+    assert stopped and "refused" in stopped[0]["text"]
+    engine.hangup(call.id)
+    until(lambda: call.phase == "ended")
+    # The words are still there; only the waveform stopped.
+    assert any(e["speaker"] == "remote" for e in call.result["transcript"])
+
+
+def test_ask_mode_still_withholds_audio_until_they_agree(live_engine):
+    engine, _phone = live_engine
+    engine.brain = Brain([("Thank you.", "continue", "granted", "")])
+    started = engine.call_start(live_plan(), mode="live", authorized=True, recording="ask")
+    call = engine.get(started["call_id"])
+    until(lambda: call.state == "active")
+    assert not call.recording
+    call.event("remote", "Yes, that is fine, you can record.")
+    until(lambda: call.recording)
+    assert "agreed to recording" in call.recording_basis
+    engine.hangup(call.id)
+    until(lambda: call.phase == "ended")

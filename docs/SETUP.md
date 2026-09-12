@@ -64,7 +64,9 @@ What the agent does on the line:
 - Uses only plan facts. Any email, digit string, or date that is not in the
   plan or the transcript is blocked before it is spoken and replaced with
   "I don't have that detail on hand."
-- Starts retaining audio only after the other side agrees to recording.
+- Retains audio from the moment the call connects. Start the call with
+  `recording: "ask"` to withhold it until the other side agrees, or `"off"`
+  to keep only the transcript. Two-party-consent states need "ask".
 - Ends with a proposal (`resolved`, `needs_user`) that the host agent must
   review against the success criteria; silence never counts as success.
 

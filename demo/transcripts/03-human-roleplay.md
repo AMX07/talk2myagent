@@ -65,7 +65,8 @@ Times are seconds from the start of the session. Nothing here is edited except t
   three runs, so this shows the prompt working rather than the backstop.
 - Recording consent was detected from ordinary speech ("Yes, you can record it") rather
   than a keyword. Retention here had already begun at 4.6 s on the developer's own
-  test-start basis; the gate that withholds audio until consent applies to live calls.
+  test-start basis. On a live call, retention is on by default and `recording: "ask"`
+  is what withholds it until they agree; a refusal stops retention under any setting.
 
 **What went wrong, honestly**
 

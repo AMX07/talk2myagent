@@ -37,7 +37,7 @@ What each part does:
 | `1.04s reply` | Measured gap between the other person's last word and the agent's first audio, for the turn just spoken. |
 | `Type to tell the agent what to do…` | Enters the call as an instruction from you. It overrides the plan and the agent acts on it next turn. |
 | Decision card | Appears when the agent needs your call. It holds the line, asks on screen with options, and resumes from your answer. |
-| `Recording` | Audio is being retained. On a live call it appears only after the other side agrees; a role-play starts recorded on the developer's own basis. |
+| `Recording` | Audio is being retained. A live call records from the moment it connects unless started with `recording: "ask"`, which waits for the other side to agree, or `"off"`. A role-play records on the developer's own basis. |
 | `Stop test` / `End call` | Ends the session, hangs up the phone line, restores your audio devices. |
 
 Open it on its own against whatever session is running:
@@ -61,7 +61,7 @@ you  ──▶  a host agent (Codex, OpenCode, Claude Code) or the t2ma CLI
             ├─ types the number into Phone's keypad and presses Call
             ├─ waits for a real connection, not just a ringing tone
             ├─ Whisper hears ▸ Qwen decides ▸ Kokoro speaks, sentence by sentence
-            ├─ presses menu digits, asks for recording consent
+            ├─ presses menu digits, records by default or waits for consent
             ├─ asks YOU when a decision is outside the plan, and waits
             ├─ hangs up and restores your audio devices
             └─ saves transcript, recording, per-turn latency
@@ -146,9 +146,14 @@ These are enforced in code, not just asked for in a prompt.
   over.
 - **Decisions that are yours stay yours.** A fee, a partial refund, store credit
   or a replacement makes the agent hold the line and ask you on screen.
-- **Audio is retained only after consent.** Recognized text is always saved; the
-  waveform is not, until the other side agrees. A company's own "this call may
-  be recorded" notice does not count as their consent.
+- **Recording is a setting you choose, and the default is on.** A live call
+  retains audio from the moment it connects. `recording: "ask"` withholds the
+  waveform until the other side actually agrees, and refuses to let the agent
+  start talking until they have; `"off"` keeps only the recognized text. The
+  agent reads agreement from ordinary speech rather than a keyword, and a
+  company's own "this call may be recorded" notice is not treated as their
+  consent to yours. **Several US states require both parties to agree before a
+  call is recorded. Use `"ask"` there.**
 - **Success needs evidence.** An outcome of `completed` requires the host agent
   to cite the transcript IDs of the other party's own confirmations, one per
   success criterion. The local agent's own opinion that it succeeded is recorded

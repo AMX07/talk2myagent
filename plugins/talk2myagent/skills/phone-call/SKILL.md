@@ -43,9 +43,12 @@ the service speaks to the other side.
 `phone_hangup(call_id)` ends a call early. `phone_call_status` reads progress
 without waiting. `phone_result` recovers saved artifacts after a restart.
 
-Recording: the opening asks for consent; audio is retained only after the
-other side agrees (the worker detects it). `recording: "off"` never retains
-audio; the transcript is still saved. Text of everything heard is kept.
+Recording: the default is `recording: "on"`, which retains audio from the moment
+the call connects. Pass `recording: "ask"` when the user is in a two-party-consent
+state or asks for it; the agent then withholds audio until the other side agrees
+in their own words, and will not begin the conversation until they have. `"off"`
+keeps only the transcript. A company's own recording announcement is never treated
+as their consent to yours.
 
 Prerequisites are checked by `phone_doctor`: BlackHole 2ch and 16ch installed,
 Accessibility granted to the host app, models cached, and the Mac paired with
