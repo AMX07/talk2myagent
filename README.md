@@ -83,6 +83,6 @@ your Phone version exposes if a control is ever not found.
 - Audio is retained only after the other side agrees; text is always kept.
 - `completed` requires the host to cite recipient evidence for every criterion.
 
-Docs: [the four local models](docs/MODELS.md) · [setup and live calling](docs/SETUP.md) · [hosts and tools](docs/INTERFACES.md)
+Docs: [the stack and where it attaches](demo/STACK.md) · [the four local models](docs/MODELS.md) · [setup and live calling](docs/SETUP.md) · [hosts and tools](docs/INTERFACES.md)
 · [role-play testing](docs/TESTING.md) · [design notes](docs/DECISIONS.md)
 · [resume notes](PROGRESS.md).
