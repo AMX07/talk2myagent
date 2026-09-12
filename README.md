@@ -4,7 +4,8 @@ A phone-calling agent that runs entirely on this Mac. Give it a task ("return
 my coffee grinder"), it dials through the Phone app over your iPhone, talks to
 whoever answers with local speech models, presses menu digits when asked, hangs
 up, and hands back a transcript and recording. Works from **Codex**, **OpenCode**,
-**Claude Code**, or  **RocketRide** through one local MCP server.
+**Claude Code**, or the **terminal**, all through one local MCP server. That same
+server is what a **[RocketRide](demo/STACK.md)** pipeline calls as tool nodes.
 
 ```sh
 cd talk2myagent
